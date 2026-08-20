@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Optional
 
 from .config import (
-    LOG_FILENAME,
-    LOG_LEVEL,
-    LOG_FORMAT,
     LOG_DATE_FORMAT,
+    LOG_FILENAME,
+    LOG_FORMAT,
+    LOG_LEVEL,
     RE_NAME_SEPARATOR,
     RE_NAME_SUFFIX,
 )
@@ -164,10 +164,9 @@ def extract_number(text: str) -> Optional[int]:
 
 def get_default_output_path(source_path: Path, template_path: Path) -> Path:
     """
-    Genera la ruta de salida por defecto para el archivo generado.
+    Genera la ruta sugerida inicialmente en el diálogo Guardar como.
 
-    El archivo se guarda en el mismo directorio que la plantilla,
-    con el nombre 'S-140_COMPLETADO.docx'.
+    El usuario todavía puede elegir otro directorio o nombre antes de generar.
 
     Args:
         source_path: Ruta del documento fuente.

@@ -2,25 +2,30 @@
 template_writer.py — Escritor profesional del documento S-140.
 
 Arquitectura:
-1. DESCUBRIMIENTO: escanea la plantilla buscando encabezados de sección
-   ("SEAMOS MEJORES MAESTROS", "NUESTRA VIDA CRISTIANA") para localizar
-   las regiones dinámicas sin depender de índices fijos.
+1. DESCUBRIMIENTO Y PREFLIGHT: localiza las copias y valida su estructura y
+   capacidad antes de modificarlas.
 2. ESCRITURA POR FILA: cada Assignment se escribe como una unidad completa
    en su fila correspondiente (número, título, duración, participantes).
-3. LIMPIEZA: las filas de plantilla sin asignación correspondiente se limpian
-   de placeholders.
-4. VALIDACIÓN FINAL: barrido de todo el documento para garantizar 0 placeholders.
+3. VERIFICACIÓN: comprueba valores escritos y marcadores en cada copia usada.
+4. LIMPIEZA FINAL: limpia solo las copias no utilizadas y guarda cuando todo
+   el documento queda libre de marcadores.
 
 Columnas: 0-6 = [FECHA], 7-13 = resto. Sala auxiliar (8-12) se deja vacía.
 Auditorio principal = columna 13.
 """
 
+import hashlib
 import logging
+import os
+import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 from docx import Document
+from docx.document import Document as DocxDocument
+from docx.table import Table
 
 from .config import (
     CONGREGATION_NAME,
@@ -30,16 +35,26 @@ from .config import (
     OPENING_PRAYER_DURATION_MINUTES,
     SONG_DURATION_MINUTES,
 )
-from .models import MeetingWeek, Assignment
+from .models import Assignment, MeetingWeek
+from .results import GenerationResult
+from .validation import GenerationValidationError
 
 logger = logging.getLogger(__name__)
 
-PLACEHOLDERS = [
-    "[FECHA]", "[Nombre]", "[Título]", "[Nombre/Nombre]",
-    "Canción [Número]", "[Número]", "[X mins.]", "[XX mins.]",
-    "(X mins.)", "(XX mins.)",
+PLACEHOLDERS = (
+    "[FECHA]",
+    "[Nombre]",
+    "[Título]",
+    "[Nombre/Nombre]",
+    "Canción [Número]",
+    "[Número]",
+    "[X mins.]",
+    "[XX mins.]",
+    "(X mins.)",
+    "(XX mins.)",
     "[NOMBRE DE LA CONGREGACIÓN]",
-]
+)
+TEMPLATE_MARKERS = (*PLACEHOLDERS, "LECTURA SEMANAL DE LA BIBLIA")
 
 HEADER_TREASURES = "TESOROS DE LA BIBLIA"
 HEADER_MINISTRY = "SEAMOS MEJORES MAESTROS"
@@ -54,6 +69,8 @@ class RowDescriptor:
     title_cell: Optional[int] = None
     duration_cell: Optional[int] = None
     participant_cell: Optional[int] = None
+    writes_title: bool = False
+    writes_duration: bool = False
     auxiliary_cells: list[int] = field(default_factory=list)
 
     def content_cells(self) -> list[int]:
@@ -69,93 +86,591 @@ class RowDescriptor:
         return cells
 
 
+class TemplateStructure(TypedDict):
+    fecha_row: Optional[int]
+    presidente_name_row: Optional[int]
+    consejero_name_row: Optional[int]
+    cancion_inicio_row: Optional[int]
+    oracion_inicio_name_row: Optional[int]
+    introduction_row: Optional[int]
+    bible_treasures_rows: list[RowDescriptor]
+    ministry_rows: list[RowDescriptor]
+    cv_normal_rows: list[RowDescriptor]
+    bible_study_row: Optional[RowDescriptor]
+    conclusion_row: Optional[int]
+    cancion_intermedia_row: Optional[int]
+    cancion_final_row: Optional[int]
+    oracion_final_name_row: Optional[int]
+
+
+@dataclass(frozen=True)
+class TemplateCopy:
+    table: Table
+    table_index: int
+    start_row: int
+    end_row: int
+    structure: TemplateStructure
+
+
 class TemplateWriter:
     """Escritor profesional del documento S-140."""
 
     def __init__(self, template_path: Path):
         self.template_path = template_path
-        self.document: Optional[Document] = None
+        self.document: Optional[DocxDocument] = None
 
     # ==================================================================
     # API pública
     # ==================================================================
 
-    def fill(self, weeks: list[MeetingWeek], output_path: Path) -> Path:
-        logger.info("Cargando plantilla: %s", self.template_path)
-        self.document = Document(self.template_path)
-
-        if not self.document.tables:
-            logger.error("La plantilla no contiene tablas.")
-            return output_path
-
-        total_forms = sum(len(self._find_copy_starts(table)) for table in self.document.tables)
-        logger.info("Capacidad detectada en la plantilla: %d formularios.", total_forms)
-
-        weeks_to_fill = weeks[:total_forms]
-        if len(weeks) > total_forms:
-            logger.warning(
-                "Solo %d formularios disponibles. Se usan %d de %d semanas.",
-                total_forms,
-                total_forms,
+    def fill(
+        self,
+        weeks: list[MeetingWeek],
+        output_path: Path,
+    ) -> GenerationResult:
+        """Ejecuta la generación completa y devuelve un resultado verificable."""
+        try:
+            if self.template_path.resolve() == output_path.resolve():
+                raise GenerationValidationError(
+                    "Ruta de salida inválida",
+                    ["La ruta de salida coincide con la plantilla"],
+                )
+            created_path = self._fill_document(weeks, output_path)
+        except GenerationValidationError as exc:
+            logger.error("Generación rechazada: %s", exc)
+            return GenerationResult.failure(len(weeks), list(exc.issues))
+        except Exception as exc:
+            logger.error("La generación falló", exc_info=True)
+            return GenerationResult.failure(
                 len(weeks),
+                [f"No se pudo generar el documento: {exc}"],
             )
 
-        week_offset = 0
-        for table_index, table in enumerate(self.document.tables, start=1):
-            consumed = self._process_table(table, weeks_to_fill, week_offset, table_index)
-            if consumed > 0:
-                logger.info(
-                    "Tabla %d: semanas índice %d a %d",
-                    table_index,
-                    week_offset,
-                    week_offset + consumed - 1,
-                )
-            else:
-                logger.debug("Tabla %d: no recibió semanas", table_index)
-            week_offset += consumed
+        return GenerationResult.success(len(weeks), created_path)
+
+    def _fill_document(self, weeks: list[MeetingWeek], output_path: Path) -> Path:
+        logger.info("Cargando plantilla: %s", self.template_path)
+        self.document = Document(str(self.template_path))
+
+        copies = self._discover_template_copies()
+        logger.info("Capacidad detectada en la plantilla: %d formularios.", len(copies))
+        issues = self._input_validation_issues(weeks, copies)
+        if issues:
+            raise GenerationValidationError("No se puede generar el documento", issues)
 
         self._write_congregation_name()
-        self._clear_all_placeholders()
-        self._clear_unused_time_markers()
-        remaining = self._count_placeholders()
-        logger.info("Placeholders tras limpieza: %d", remaining)
 
-        self.document.save(str(output_path))
-        logger.info("Documento guardado: %s", output_path)
-        return output_path
+        write_issues: list[str] = []
+        for week, copy in zip(weeks, copies):
+            self._process_one_copy(
+                copy.table,
+                copy.start_row,
+                copy.end_row,
+                week,
+                copy.structure,
+            )
+            write_issues.extend(self._written_content_issues(week, copy))
+            unresolved = self._find_markers_in_range(
+                copy.table,
+                copy.start_row,
+                copy.end_row,
+            )
+            if unresolved:
+                write_issues.append(
+                    f"semana {week.week_index}: quedaron marcadores sin resolver: "
+                    f"{', '.join(unresolved)}"
+                )
 
-    # ==================================================================
-    # Procesamiento de una tabla
-    # ==================================================================
-
-    def _process_table(self, table, weeks: list[MeetingWeek], week_offset: int,
-                       table_index: Optional[int] = None) -> int:
-        """Procesa una tabla completa y devuelve cuántas semanas consumió."""
-        copy_starts = self._find_copy_starts(table)
-        if not copy_starts:
-            return 0
-
-        consumed = 0
-        for ci, start_row in enumerate(copy_starts):
-            week_index = week_offset + ci
-            if week_index >= len(weeks):
-                break
-            end_row = copy_starts[ci + 1] if ci + 1 < len(copy_starts) else len(table.rows)
-            self._process_one_copy(table, start_row, end_row, weeks[week_index])
-            consumed += 1
-
-        if table_index is not None and consumed == 0:
-            logger.debug("Tabla %d: copy_starts=%d pero sin semanas disponibles", table_index, len(copy_starts))
-        elif table_index is not None:
-            logger.debug(
-                "Tabla %d: consumió %d semanas (índices globales %d-%d)",
-                table_index,
-                consumed,
-                week_offset,
-                week_offset + consumed - 1,
+        congregation_markers = self._find_document_markers(
+            ("[NOMBRE DE LA CONGREGACIÓN]",)
+        )
+        if congregation_markers:
+            write_issues.append("no se pudo escribir el nombre de la congregación")
+        if write_issues:
+            raise GenerationValidationError(
+                "La plantilla no se pudo completar",
+                write_issues,
             )
 
-        return consumed
+        self._clear_unused_copies(copies[len(weeks) :])
+        remaining = self._find_document_markers()
+        if remaining:
+            raise GenerationValidationError(
+                "La plantilla contiene marcadores residuales",
+                [f"sin resolver: {', '.join(remaining)}"],
+            )
+        logger.info("Marcadores residuales tras la validación: 0")
+
+        created_path = self._save_document_atomically(output_path)
+        logger.info("Documento guardado: %s", created_path)
+        return created_path
+
+    def _save_document_atomically(self, output_path: Path) -> Path:
+        """Publica un DOCX verificado sin dejar una salida parcial."""
+        if self.document is None:
+            raise GenerationValidationError(
+                "No se puede guardar el documento",
+                ["no hay un documento preparado para guardar"],
+            )
+        if not output_path.parent.is_dir():
+            raise GenerationValidationError(
+                "No se puede guardar el documento",
+                [f"el directorio de salida no existe: {output_path.parent}"],
+            )
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=str(output_path.parent),
+            prefix=f".{output_path.stem}-",
+            suffix=".docx",
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            self.document.save(str(temporary_path))
+            if not temporary_path.is_file() or temporary_path.stat().st_size <= 0:
+                raise OSError("el archivo temporal no se creó correctamente")
+            Document(str(temporary_path))
+            expected_digest = self._file_digest(temporary_path)
+            os.replace(temporary_path, output_path)
+            created_path = output_path.resolve(strict=True)
+            if not created_path.is_file() or created_path.stat().st_size <= 0:
+                raise OSError("no se pudo verificar el archivo de salida")
+            if self._file_digest(created_path) != expected_digest:
+                raise OSError("el archivo publicado no coincide con el generado")
+            return created_path
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def _file_digest(self, path: Path) -> bytes:
+        digest = hashlib.sha256()
+        with path.open("rb") as document_file:
+            for chunk in iter(lambda: document_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.digest()
+
+    # ==================================================================
+    # Descubrimiento y validación de formularios
+    # ==================================================================
+
+    def _discover_template_copies(self) -> list[TemplateCopy]:
+        if self.document is None:
+            return []
+
+        copies: list[TemplateCopy] = []
+        for table_index, table in enumerate(self.document.tables, start=1):
+            starts = self._find_copy_starts(table)
+            for copy_index, start_row in enumerate(starts):
+                end_row = (
+                    starts[copy_index + 1]
+                    if copy_index + 1 < len(starts)
+                    else len(table.rows)
+                )
+                copies.append(
+                    TemplateCopy(
+                        table=table,
+                        table_index=table_index,
+                        start_row=start_row,
+                        end_row=end_row,
+                        structure=self._discover_structure(table, start_row, end_row),
+                    )
+                )
+        return copies
+
+    def _input_validation_issues(
+        self,
+        weeks: list[MeetingWeek],
+        copies: list[TemplateCopy],
+    ) -> list[str]:
+        issues: list[str] = []
+        if not weeks:
+            issues.append("no hay semanas para escribir")
+        if not copies:
+            issues.append("la plantilla no contiene formularios reconocibles")
+        if len(weeks) > len(copies):
+            issues.append(
+                f"la capacidad de la plantilla es de {len(copies)} semanas, "
+                f"pero se recibieron {len(weeks)}"
+            )
+
+        for week in weeks:
+            if not week.is_valid():
+                issues.extend(
+                    f"semana {week.week_index}: {issue}"
+                    for issue in week.validation_errors()
+                )
+
+        for week, copy in zip(weeks, copies):
+            issues.extend(self._copy_validation_issues(week, copy))
+        return issues
+
+    def _copy_validation_issues(
+        self,
+        week: MeetingWeek,
+        copy: TemplateCopy,
+    ) -> list[str]:
+        prefix = f"semana {week.week_index}, tabla {copy.table_index}"
+        issues: list[str] = []
+        structure = copy.structure
+
+        required_rows = (
+            ("fecha", structure["fecha_row"]),
+            ("presidente", structure["presidente_name_row"]),
+            ("canción inicial", structure["cancion_inicio_row"]),
+            ("oración inicial", structure["oracion_inicio_name_row"]),
+            ("introducción", structure["introduction_row"]),
+            ("canción intermedia", structure["cancion_intermedia_row"]),
+            ("estudio bíblico", structure["bible_study_row"]),
+            ("conclusión", structure["conclusion_row"]),
+            ("canción final", structure["cancion_final_row"]),
+            ("oración final", structure["oracion_final_name_row"]),
+        )
+        for field_name, row in required_rows:
+            if row is None:
+                issues.append(f"{prefix}: falta la fila de {field_name}")
+
+        required_labels = (
+            "LECTURA SEMANAL DE LA BIBLIA",
+            HEADER_TREASURES,
+            HEADER_MINISTRY,
+            HEADER_CHRISTIAN_LIFE,
+            HEADER_CONCLUSION,
+        )
+        for label in required_labels:
+            if not self._range_contains(copy, label):
+                issues.append(f"{prefix}: falta el marcador '{label}'")
+
+        christian_life_normal = [
+            assignment
+            for assignment in week.christian_life
+            if not assignment.is_bible_study and not assignment.is_conclusion
+        ]
+        capacities = (
+            (
+                "Tesoros de la Biblia",
+                week.bible_treasures,
+                structure["bible_treasures_rows"],
+            ),
+            ("Seamos Mejores Maestros", week.ministry, structure["ministry_rows"]),
+            (
+                "Nuestra Vida Cristiana",
+                christian_life_normal,
+                structure["cv_normal_rows"],
+            ),
+        )
+        for section_name, assignments, descriptors in capacities:
+            if len(assignments) > len(descriptors):
+                issues.append(
+                    f"{prefix}: la capacidad de {section_name} es de "
+                    f"{len(descriptors)} filas y se necesitan {len(assignments)}"
+                )
+            for assignment, descriptor in zip(assignments, descriptors):
+                issues.extend(
+                    self._descriptor_validation_issues(
+                        prefix,
+                        section_name,
+                        copy.table,
+                        descriptor,
+                        assignment,
+                    )
+                )
+
+        bible_study_row = structure["bible_study_row"]
+        if bible_study_row is not None:
+            bible_study = next(
+                (
+                    assignment
+                    for assignment in week.christian_life
+                    if assignment.is_bible_study
+                ),
+                None,
+            )
+        else:
+            bible_study = None
+        if bible_study_row is not None and bible_study is not None:
+            issues.extend(
+                self._descriptor_validation_issues(
+                    prefix,
+                    "Estudio bíblico",
+                    copy.table,
+                    bible_study_row,
+                    bible_study,
+                )
+            )
+
+        conclusion_row = structure["conclusion_row"]
+        conclusions = [
+            assignment
+            for assignment in week.christian_life
+            if assignment.is_conclusion
+        ]
+        if conclusion_row is not None:
+            template_duration = self._fixed_duration_in_row(
+                copy.table,
+                conclusion_row,
+            )
+            expected_duration = DEFAULT_DURATIONS["conclusion"]
+            if template_duration != expected_duration:
+                issues.append(
+                    f"{prefix}: la conclusión de la plantilla debe durar "
+                    f"{expected_duration} minutos"
+                )
+            if (
+                len(conclusions) == 1
+                and template_duration is not None
+                and conclusions[0].duration_minutes != template_duration
+            ):
+                issues.append(
+                    f"{prefix}: la duración de la conclusión no coincide con la "
+                    "plantilla"
+                )
+        return issues
+
+    def _descriptor_validation_issues(
+        self,
+        prefix: str,
+        section_name: str,
+        table: Table,
+        descriptor: RowDescriptor,
+        assignment: Assignment,
+    ) -> list[str]:
+        row = table.rows[descriptor.row_index]
+        texts = self._unique_cell_texts(row)
+        missing: list[str] = []
+        if not any(self._starts_with_number(text) for text in texts):
+            missing.append("número")
+        if not any(self._has_writable_title(text) for text in texts):
+            missing.append("título")
+        if not any(
+            self._has_duration_marker(text)
+            or self._fixed_duration_from_text(text) is not None
+            for text in texts
+        ):
+            missing.append("duración")
+        if descriptor.participant_cell is None or not any(
+            "[Nombre]" in text or "[Nombre/Nombre]" in text for text in texts
+        ):
+            missing.append("participantes")
+
+        issues = []
+        if missing:
+            issues.append(
+                f"{prefix}: una fila de {section_name} no admite {', '.join(missing)}"
+            )
+
+        fixed_duration = next(
+            (
+                duration
+                for text in texts
+                if (duration := self._fixed_duration_from_text(text)) is not None
+            ),
+            None,
+        )
+        if fixed_duration is not None and assignment.duration_minutes != fixed_duration:
+            issues.append(
+                f"{prefix}: el punto {assignment.number} dura "
+                f"{assignment.duration_minutes} minutos, pero su fila fija "
+                f"muestra {fixed_duration}"
+            )
+        return issues
+
+    def _unique_cell_texts(self, row) -> list[str]:
+        texts: list[str] = []
+        seen_cells: set[object] = set()
+        for cell in row.cells:
+            if cell._tc in seen_cells:
+                continue
+            seen_cells.add(cell._tc)
+            texts.append(cell.text.strip())
+        return texts
+
+    def _has_writable_title(self, text: str) -> bool:
+        if "[Título]" in text:
+            return True
+        prefix = self._leading_number_prefix(text)
+        if not prefix:
+            return False
+        duration_match = re.search(r"\(\s*\d+\s+mins?\.?\s*\)", text, re.IGNORECASE)
+        if duration_match is None:
+            return False
+        return bool(text[len(prefix) : duration_match.start()].strip())
+
+    def _fixed_duration_from_text(self, text: str) -> Optional[int]:
+        match = re.search(r"\(\s*(\d+)\s+mins?\.?\s*\)", text, re.IGNORECASE)
+        return int(match.group(1)) if match else None
+
+    def _fixed_duration_in_row(self, table: Table, row_index: int) -> Optional[int]:
+        for text in self._unique_cell_texts(table.rows[row_index]):
+            duration = self._fixed_duration_from_text(text)
+            if duration is not None:
+                return duration
+        return None
+
+    def _written_content_issues(
+        self,
+        week: MeetingWeek,
+        copy: TemplateCopy,
+    ) -> list[str]:
+        """Comprueba que los datos esperados estén presentes tras escribir."""
+        issues: list[str] = []
+        structure = copy.structure
+        prefix = f"semana {week.week_index}, tabla {copy.table_index}"
+
+        row_values = (
+            ("fecha", structure["fecha_row"], week.date),
+            ("lectura semanal", structure["fecha_row"], week.weekly_reading),
+            ("presidente", structure["presidente_name_row"], week.president),
+            (
+                "oración inicial",
+                structure["oracion_inicio_name_row"],
+                week.opening_prayer,
+            ),
+            (
+                "oración final",
+                structure["oracion_final_name_row"],
+                week.closing_prayer,
+            ),
+        )
+        for field_name, row_index, expected_value in row_values:
+            if row_index is not None and not self._row_contains(
+                copy.table,
+                row_index,
+                expected_value,
+            ):
+                issues.append(f"{prefix}: no se escribió {field_name}")
+
+        songs = (
+            ("canción inicial", structure["cancion_inicio_row"], week.opening_song),
+            (
+                "canción intermedia",
+                structure["cancion_intermedia_row"],
+                week.intermediate_song,
+            ),
+            ("canción final", structure["cancion_final_row"], week.closing_song),
+        )
+        for field_name, row_index, song_number in songs:
+            if row_index is not None and not self._row_contains_pattern(
+                copy.table,
+                row_index,
+                rf"Canción\s+{re.escape(song_number)}(?!\d)",
+            ):
+                issues.append(f"{prefix}: no se escribió {field_name}")
+
+        christian_life_normal = [
+            assignment
+            for assignment in week.christian_life
+            if not assignment.is_bible_study and not assignment.is_conclusion
+        ]
+        sections = (
+            (week.bible_treasures, structure["bible_treasures_rows"]),
+            (week.ministry, structure["ministry_rows"]),
+            (christian_life_normal, structure["cv_normal_rows"]),
+        )
+        for assignments, descriptors in sections:
+            for assignment, descriptor in zip(
+                sorted(assignments, key=lambda item: item.number),
+                descriptors,
+            ):
+                issues.extend(
+                    self._assignment_written_issues(
+                        prefix,
+                        copy.table,
+                        descriptor,
+                        assignment,
+                    )
+                )
+
+        bible_study = next(
+            (
+                assignment
+                for assignment in week.christian_life
+                if assignment.is_bible_study
+            ),
+            None,
+        )
+        bible_study_row = structure["bible_study_row"]
+        if bible_study is not None and bible_study_row is not None:
+            issues.extend(
+                self._assignment_written_issues(
+                    prefix,
+                    copy.table,
+                    bible_study_row,
+                    bible_study,
+                )
+            )
+        return issues
+
+    def _assignment_written_issues(
+        self,
+        prefix: str,
+        table: Table,
+        descriptor: RowDescriptor,
+        assignment: Assignment,
+    ) -> list[str]:
+        issues: list[str] = []
+        row = table.rows[descriptor.row_index]
+        label = f"punto {assignment.number}"
+
+        number_cell = descriptor.number_cell
+        if number_cell is not None and not self._cell_starts_with_number(
+            row.cells[number_cell],
+            assignment.number,
+        ):
+            issues.append(f"{prefix}: no se escribió el número del {label}")
+
+        title_cell = descriptor.title_cell
+        if (
+            descriptor.writes_title
+            and title_cell is not None
+            and assignment.title not in row.cells[title_cell].text
+        ):
+            issues.append(f"{prefix}: no se escribió el título del {label}")
+
+        duration_cell = descriptor.duration_cell
+        if (
+            descriptor.writes_duration
+            and duration_cell is not None
+            and assignment.duration_text not in row.cells[duration_cell].text
+        ):
+            issues.append(f"{prefix}: no se escribió la duración del {label}")
+
+        participant_cell = descriptor.participant_cell
+        participants = assignment.formatted_participants()
+        if (
+            participant_cell is not None
+            and participants not in row.cells[participant_cell].text
+        ):
+            issues.append(f"{prefix}: no se escribieron los participantes del {label}")
+        return issues
+
+    def _cell_starts_with_number(self, cell, expected_number: int) -> bool:
+        expected_prefix = f"{expected_number}."
+        return any(
+            self._leading_number_prefix(paragraph.text) == expected_prefix
+            for paragraph in cell.paragraphs
+        )
+
+    def _row_contains(self, table: Table, row_index: int, text: str) -> bool:
+        return any(
+            text in cell_text
+            for cell_text in self._unique_cell_texts(table.rows[row_index])
+        )
+
+    def _row_contains_pattern(
+        self,
+        table: Table,
+        row_index: int,
+        pattern: str,
+    ) -> bool:
+        return any(
+            re.search(pattern, cell_text) is not None
+            for cell_text in self._unique_cell_texts(table.rows[row_index])
+        )
+
+    def _range_contains(self, copy: TemplateCopy, text: str) -> bool:
+        for row_index in range(copy.start_row, copy.end_row):
+            if any(text in cell.text for cell in copy.table.rows[row_index].cells):
+                return True
+        return False
 
     def _find_copy_starts(self, table) -> list[int]:
         starts = []
@@ -168,13 +683,15 @@ class TemplateWriter:
     # Procesamiento de UNA copia del formulario
     # ==================================================================
 
-    def _process_one_copy(self, table, start_row: int, end_row: int, week: MeetingWeek) -> None:
+    def _process_one_copy(
+        self,
+        table,
+        start_row: int,
+        end_row: int,
+        week: MeetingWeek,
+        structure: TemplateStructure,
+    ) -> None:
         """Rellena una copia del formulario."""
-        structure = self._discover_structure(table, start_row, end_row)
-        if not structure:
-            logger.warning("Estructura no descubierta en filas %d-%d", start_row, end_row)
-            return
-
         # 1. Cabecera fija
         self._write_header(table, week, structure)
 
@@ -190,33 +707,32 @@ class TemplateWriter:
         self._write_section_rows(table, cv_normal, structure["cv_normal_rows"])
 
         # 5. Estudio bíblico
-        if structure.get("bible_study_row") is not None:
+        bible_study_row = structure["bible_study_row"]
+        if bible_study_row is not None:
             eb = next((a for a in week.christian_life if a.is_bible_study), None)
             if eb:
-                self._write_bible_study_row(table, structure["bible_study_row"], eb)
+                self._write_bible_study_row(table, bible_study_row, eb)
             else:
                 self._clear_row(
                     table,
-                    structure["bible_study_row"].row_index,
+                    bible_study_row.row_index,
                 )
 
-        # 6. Conclusión
-        if structure.get("conclusion_row") is not None:
-            self._clear_row(table, structure["conclusion_row"])
-
-        # 7. Canciones y oraciones
+        # 6. Canciones y oraciones
         self._write_songs_and_prayers(table, week, structure)
 
-        # 8. Horas de inicio
+        # 7. Horas de inicio
         self._write_schedule_times(table, start_row, end_row, week, structure)
 
     # ==================================================================
     # Descubrimiento de estructura
     # ==================================================================
 
-    def _discover_structure(self, table, start_row: int, end_row: int) -> Optional[dict]:
+    def _discover_structure(
+        self, table, start_row: int, end_row: int
+    ) -> TemplateStructure:
         """Escanea las filas y descubre la posición de cada elemento."""
-        struct = {
+        struct: TemplateStructure = {
             "fecha_row": None,
             "presidente_name_row": None,
             "consejero_name_row": None,
@@ -304,7 +820,7 @@ class TemplateWriter:
     def _build_row_descriptor(self, table, row_idx: int) -> RowDescriptor:
         row = table.rows[row_idx]
         descriptor = RowDescriptor(row_index=row_idx)
-        participant_cells_by_identity: dict[int, int] = {}
+        participant_cells_by_identity: dict[object, int] = {}
 
         for ci, cell in enumerate(row.cells):
             text = cell.text.strip()
@@ -317,13 +833,15 @@ class TemplateWriter:
             if "[Nombre/Nombre]" in text or "[Nombre]" in text:
                 # Una celda física puede repetirse en row.cells por gridSpan; conservamos
                 # la última posición vista de cada tc para escoger luego la de mayor índice.
-                participant_cells_by_identity[id(cell._tc)] = ci
+                participant_cells_by_identity[cell._tc] = ci
 
             if descriptor.title_cell is None and (
                 "[Título]" in text or "Estudio bíblico" in text
             ):
                 descriptor.title_cell = ci
                 descriptor.duration_cell = ci
+                descriptor.writes_title = "[Título]" in text
+                descriptor.writes_duration = self._has_duration_marker(text)
                 if descriptor.number_cell is None and self._starts_with_number(text):
                     descriptor.number_cell = ci
                 continue
@@ -333,6 +851,11 @@ class TemplateWriter:
 
             if descriptor.duration_cell is None and self._has_duration_marker(text):
                 descriptor.duration_cell = ci
+
+            if "[Título]" in text:
+                descriptor.writes_title = True
+            if self._has_duration_marker(text):
+                descriptor.writes_duration = True
 
         if descriptor.title_cell is None:
             descriptor.title_cell = descriptor.number_cell
@@ -397,7 +920,9 @@ class TemplateWriter:
     # Escritura de cabecera fija
     # ==================================================================
 
-    def _write_header(self, table, week: MeetingWeek, struct: dict) -> None:
+    def _write_header(
+        self, table, week: MeetingWeek, struct: TemplateStructure
+    ) -> None:
         """Escribe los campos fijos de la cabecera."""
         # [FECHA]
         if struct["fecha_row"] is not None and week.date:
@@ -489,14 +1014,13 @@ class TemplateWriter:
         self._write_assignment_in_row(table, descriptor, assignment)
 
     def _clear_auxiliary_cells(self, row, descriptor: RowDescriptor) -> None:
-        seen_cells: set[int] = set()
+        seen_cells: set[object] = set()
         for ci in descriptor.auxiliary_cells:
             if ci < len(row.cells):
                 cell = row.cells[ci]
-                cell_id = id(cell._tc)
-                if cell_id in seen_cells:
+                if cell._tc in seen_cells:
                     continue
-                seen_cells.add(cell_id)
+                seen_cells.add(cell._tc)
                 self._empty_cell(cell)
 
     def _empty_cell(self, cell) -> None:
@@ -552,7 +1076,9 @@ class TemplateWriter:
     # Canciones y oraciones
     # ==================================================================
 
-    def _write_songs_and_prayers(self, table, week: MeetingWeek, struct: dict) -> None:
+    def _write_songs_and_prayers(
+        self, table, week: MeetingWeek, struct: TemplateStructure
+    ) -> None:
         # Canción intermedia
         if struct["cancion_intermedia_row"] is not None and week.intermediate_song:
             self._write_cancion_in_row(table, struct["cancion_intermedia_row"],
@@ -582,12 +1108,11 @@ class TemplateWriter:
     def _write_cancion_in_row(self, table, row_idx: int, song: str) -> None:
         if row_idx >= len(table.rows):
             return
-        seen_cells: set[int] = set()
+        seen_cells: set[object] = set()
         for cell in table.rows[row_idx].cells:
-            cell_id = id(cell._tc)
-            if cell_id in seen_cells:
+            if cell._tc in seen_cells:
                 continue
-            seen_cells.add(cell_id)
+            seen_cells.add(cell._tc)
             if "Canción [Número]" in cell.text:
                 self._replace_in_cell(cell, "Canción [Número]", f"Canción {song}")
                 return
@@ -602,7 +1127,7 @@ class TemplateWriter:
         start_row: int,
         end_row: int,
         week: MeetingWeek,
-        struct: dict,
+        struct: TemplateStructure,
     ) -> None:
         """Calcula y escribe la hora de inicio de cada actividad."""
         events: list[tuple[int, int]] = []
@@ -695,13 +1220,16 @@ class TemplateWriter:
             self._add_schedule_event(events, descriptor.row_index, duration)
 
     def _assignment_duration(self, assignment: Assignment) -> int:
-        if assignment.duration_minutes > 0:
+        if (
+            isinstance(assignment.duration_minutes, int)
+            and not isinstance(assignment.duration_minutes, bool)
+            and assignment.duration_minutes > 0
+        ):
             return assignment.duration_minutes
-        logger.warning(
-            "Punto %d sin duración; no avanzará el cálculo de hora.",
-            assignment.number,
+        raise GenerationValidationError(
+            "No se puede calcular el horario",
+            [f"el punto {assignment.number} no tiene una duración positiva"],
         )
-        return 0
 
     def _add_schedule_event(
         self,
@@ -751,49 +1279,69 @@ class TemplateWriter:
             if ph in cell.text:
                 self._remove_text(cell, ph)
 
-    def _clear_all_placeholders(self) -> None:
-        if self.document is None:
-            return
-        for table in self.document.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for ph in PLACEHOLDERS:
-                        if ph in cell.text:
-                            self._remove_text(cell, ph)
-
     def _write_congregation_name(self) -> None:
         if self.document is None:
             return
         marker = "[NOMBRE DE LA CONGREGACIÓN]"
         for table in self.document.tables:
-            seen_cells: set[int] = set()
+            seen_cells: set[object] = set()
             for row in table.rows:
                 for cell in row.cells:
-                    cell_id = id(cell._tc)
-                    if cell_id in seen_cells:
+                    if cell._tc in seen_cells:
                         continue
-                    seen_cells.add(cell_id)
+                    seen_cells.add(cell._tc)
                     if marker in cell.text:
                         self._replace_in_cell(cell, marker, CONGREGATION_NAME)
 
-    def _clear_unused_time_markers(self) -> None:
-        if self.document is None:
-            return
-        for table in self.document.tables:
-            for row_index, _row in enumerate(table.rows):
-                self._clear_time_in_row(table, row_index)
+    def _clear_unused_copies(self, copies: list[TemplateCopy]) -> None:
+        """Limpia únicamente formularios que no recibieron una semana."""
+        for copy in copies:
+            seen_cells: set[object] = set()
+            for row_index in range(copy.start_row, copy.end_row):
+                for cell in copy.table.rows[row_index].cells:
+                    if cell._tc in seen_cells:
+                        continue
+                    seen_cells.add(cell._tc)
+                    for marker in TEMPLATE_MARKERS:
+                        if marker in cell.text:
+                            self._remove_text(cell, marker)
+                self._clear_time_in_row(copy.table, row_index)
 
-    def _count_placeholders(self) -> int:
+    def _find_markers_in_range(
+        self,
+        table: Table,
+        start_row: int,
+        end_row: int,
+        markers: Optional[tuple[str, ...]] = None,
+    ) -> list[str]:
+        selected_markers = TEMPLATE_MARKERS if markers is None else markers
+        found: set[str] = set()
+        seen_cells: set[object] = set()
+        for row_index in range(start_row, end_row):
+            row = table.rows[row_index]
+            if markers is None and row.cells and row.cells[0].text.strip() == "0:00":
+                found.add("0:00")
+            for cell in row.cells:
+                if cell._tc in seen_cells:
+                    continue
+                seen_cells.add(cell._tc)
+                found.update(
+                    marker for marker in selected_markers if marker in cell.text
+                )
+        return sorted(found)
+
+    def _find_document_markers(
+        self,
+        markers: Optional[tuple[str, ...]] = None,
+    ) -> list[str]:
         if self.document is None:
-            return 0
-        count = 0
+            return []
+        found: set[str] = set()
         for table in self.document.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for ph in PLACEHOLDERS:
-                        if ph in cell.text:
-                            count += 1
-        return count
+            found.update(
+                self._find_markers_in_range(table, 0, len(table.rows), markers)
+            )
+        return sorted(found)
 
     # ==================================================================
     # Reemplazo de texto preservando formato (nivel de runs)
@@ -866,12 +1414,12 @@ class TemplateWriter:
             return False
         end = pos + len(search)
         aff = []
-        for ri, rs, re in b:
-            if rs <= pos < re:
+        for ri, rs, run_end in b:
+            if rs <= pos < run_end:
                 aff.append(ri)
             elif pos <= rs < end:
                 aff.append(ri)
-            elif rs < end <= re and ri not in aff:
+            elif rs < end <= run_end and ri not in aff:
                 aff.append(ri)
         if not aff:
             return False
@@ -883,20 +1431,24 @@ class TemplateWriter:
         runs[f].text = orig[:rel] + repl + orig[rel + len(search):]
         for ri in aff[1:]:
             rs = next(s for r, s, e in b if r == ri)
-            re = next(e for r, s, e in b if r == ri)
-            if rs >= pos and re <= end:
+            run_end = next(e for r, s, e in b if r == ri)
+            if rs >= pos and run_end <= end:
                 runs[ri].text = ""
-            elif rs < end <= re:
+            elif rs < end <= run_end:
                 ov = end - rs
                 if 0 < ov <= len(runs[ri].text):
                     runs[ri].text = runs[ri].text[ov:]
-            elif rs <= pos < re:
-                ov = re - pos
+            elif rs <= pos < run_end:
+                ov = run_end - pos
                 if 0 < ov <= len(runs[ri].text):
                     runs[ri].text = runs[ri].text[:-ov]
         return True
 
 
-def fill_template(template_path: Path, weeks: list[MeetingWeek], output_path: Path) -> Path:
+def fill_template(
+    template_path: Path,
+    weeks: list[MeetingWeek],
+    output_path: Path,
+) -> GenerationResult:
     writer = TemplateWriter(template_path)
     return writer.fill(weeks, output_path)

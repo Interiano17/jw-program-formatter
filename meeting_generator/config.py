@@ -5,9 +5,8 @@ Contiene todas las constantes, expresiones regulares compiladas,
 palabras clave y configuraciones utilizadas por el parser y el writer.
 """
 
-import re
 import logging
-from pathlib import Path
+import re
 
 # ---------------------------------------------------------------------------
 # Configuración de archivos y logging
@@ -50,23 +49,106 @@ RE_WEEK_HEADER: re.Pattern = re.compile(
     re.IGNORECASE
 )
 
-# Extracción de la fecha de la cabecera de semana
-# Captura todo el texto después de "SEMANA DEL "
+# Extracción del contenido de fecha de la cabecera de semana.
+# El parser limita este contenido por la posición de la lectura semanal.
 RE_DATE: re.Pattern = re.compile(
-    r"SEMANA\s+DEL\s*(.+?)(?:\.\s*JEREMÍAS|\s*JEREMÍAS|\.\s*$|\s*$)",
-    re.IGNORECASE
+    r"^\s*SEMANA\s+DEL\s*(.*)$",
+    re.IGNORECASE,
 )
 
-# Extracción de la lectura semanal (libro + capítulos)
-# Ejemplos: "JEREMÍAS 13-15", "JEREMÍAS, 16, 17", "JEREMÍAS 18,19"
+# Los 66 libros en la forma utilizada por el programa en español.
+BIBLE_BOOK_NAMES: tuple[str, ...] = (
+    "GÉNESIS",
+    "ÉXODO",
+    "LEVÍTICO",
+    "NÚMEROS",
+    "DEUTERONOMIO",
+    "JOSUÉ",
+    "JUECES",
+    "RUT",
+    "1 SAMUEL",
+    "2 SAMUEL",
+    "1 REYES",
+    "2 REYES",
+    "1 CRÓNICAS",
+    "2 CRÓNICAS",
+    "ESDRAS",
+    "NEHEMÍAS",
+    "ESTER",
+    "JOB",
+    "SALMOS",
+    "PROVERBIOS",
+    "ECLESIASTÉS",
+    "CANTAR DE LOS CANTARES",
+    "ISAÍAS",
+    "JEREMÍAS",
+    "LAMENTACIONES",
+    "EZEQUIEL",
+    "DANIEL",
+    "OSEAS",
+    "JOEL",
+    "AMÓS",
+    "ABDÍAS",
+    "JONÁS",
+    "MIQUEAS",
+    "NAHÚM",
+    "HABACUC",
+    "SOFONÍAS",
+    "AGEO",
+    "ZACARÍAS",
+    "MALAQUÍAS",
+    "MATEO",
+    "MARCOS",
+    "LUCAS",
+    "JUAN",
+    "HECHOS",
+    "ROMANOS",
+    "1 CORINTIOS",
+    "2 CORINTIOS",
+    "GÁLATAS",
+    "EFESIOS",
+    "FILIPENSES",
+    "COLOSENSES",
+    "1 TESALONICENSES",
+    "2 TESALONICENSES",
+    "1 TIMOTEO",
+    "2 TIMOTEO",
+    "TITO",
+    "FILEMÓN",
+    "HEBREOS",
+    "SANTIAGO",
+    "1 PEDRO",
+    "2 PEDRO",
+    "1 JUAN",
+    "2 JUAN",
+    "3 JUAN",
+    "JUDAS",
+    "APOCALIPSIS",
+)
+
+_BIBLE_BOOK_ALIASES: tuple[str, ...] = (
+    "EL CANTAR DE LOS CANTARES",
+    "HECHOS DE LOS APÓSTOLES",
+    "CANTAR",
+    "CANTARES",
+    "HAGEO",
+)
+
+_BIBLE_BOOK_PATTERN = "|".join(
+    re.escape(book).replace(r"\ ", r"\s+")
+    for book in sorted(
+        BIBLE_BOOK_NAMES + _BIBLE_BOOK_ALIASES,
+        key=len,
+        reverse=True,
+    )
+)
+
+# Extracción de la lectura semanal (libro + capítulos).
+# Ejemplos: "JEREMÍAS 13-15", "1 CORINTIOS 1-2", "OSEAS 1-3".
 RE_WEEKLY_READING: re.Pattern = re.compile(
-    r"(JEREMÍAS|ISAÍAS|EZEQUIEL|DANIEL|GÉNESIS|ÉXODO|LEVÍTICO|NÚMEROS|DEUTERONOMIO|"
-    r"MATEO|MARCOS|LUCAS|JUAN|HECHOS|ROMANOS|CORINTIOS|GÁLATAS|EFESIOS|FILIPENSES|"
-    r"COLOSENSES|TESALONICENSES|TIMOTEO|TITO|FILEMÓN|HEBREOS|SANTIAGO|PEDRO|"
-    r"APOCALIPSIS|PROVERBIOS|SALMOS|JOB|CANTAR|RUT|LAMENTACIONES|ESTER|ECLESIASTÉS|"
-    r"JOEL|AMÓS|ABDÍAS|JONÁS|MIQUEAS|NAHÚM|HABACUC|SOFONÍAS|HAGEO|ZACARÍAS|MALAQUÍAS|"
-    r"JOSUÉ|JUECES|SAMUEL|REYES|CRÓNICAS|ESDRAS|NEHEMÍAS|ÉXODO|LEVÍTICO)\s*[\d,\-:\s;]+",
-    re.IGNORECASE
+    rf"\b(?:{_BIBLE_BOOK_PATTERN})\s*[,;:]?\s*"
+    r"\d+(?:\s*[-–—,;:.]\s*\d+)*\b(?!\s*[-–—,;:])",
+    re.IGNORECASE,
 )
 
 # Detección del presidente y canción inicial

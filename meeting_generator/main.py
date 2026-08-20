@@ -2,19 +2,16 @@
 Punto de entrada del Meeting Generator.
 
 Proporciona una interfaz gráfica con tkinter para seleccionar
-el documento fuente y la plantilla, ejecuta el parser y el writer,
-y genera el archivo S-140_COMPLETADO.docx.
+el documento fuente, la plantilla y la ruta donde guardar el resultado.
 """
 
 import logging
 import tkinter as tk
-from tkinter import filedialog, messagebox
 from pathlib import Path
+from tkinter import filedialog, messagebox
 
-from .config import OUTPUT_FILENAME, ALLOWED_EXTENSIONS
-from .utils import setup_logging, get_default_output_path
-from .parser import parse_document
-from .template_writer import fill_template
+from .generator import generate_document
+from .utils import get_default_output_path, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +31,7 @@ class MeetingGeneratorApp:
         # Variables de estado
         self.source_path: Path | None = None
         self.template_path: Path | None = None
+        self._generation_in_progress = False
 
         self._build_ui()
 
@@ -65,7 +63,7 @@ class MeetingGeneratorApp:
         file_frame.pack(pady=20, padx=40, fill=tk.X)
 
         # Botón para seleccionar documento fuente
-        source_button = tk.Button(
+        self.source_button = tk.Button(
             file_frame,
             text="1. Seleccionar Documento del Programa",
             command=self._select_source_file,
@@ -73,7 +71,7 @@ class MeetingGeneratorApp:
             height=2,
             bg="#e0e0e0",
         )
-        source_button.pack(pady=5)
+        self.source_button.pack(pady=5)
 
         self.source_label = tk.Label(
             file_frame,
@@ -84,7 +82,7 @@ class MeetingGeneratorApp:
         self.source_label.pack(pady=2)
 
         # Botón para seleccionar plantilla
-        template_button = tk.Button(
+        self.template_button = tk.Button(
             file_frame,
             text="2. Seleccionar Plantilla S-140",
             command=self._select_template_file,
@@ -92,7 +90,7 @@ class MeetingGeneratorApp:
             height=2,
             bg="#e0e0e0",
         )
-        template_button.pack(pady=5)
+        self.template_button.pack(pady=5)
 
         self.template_label = tk.Label(
             file_frame,
@@ -108,7 +106,7 @@ class MeetingGeneratorApp:
 
         self.generate_button = tk.Button(
             generate_frame,
-            text="Generar S-140_COMPLETADO.docx",
+            text="3. Generar y guardar como...",
             command=self._generate_document,
             width=35,
             height=3,
@@ -136,8 +134,8 @@ class MeetingGeneratorApp:
         output_info = tk.Label(
             output_frame,
             text=(
-                "El archivo generado se guardará como:\n"
-                "S-140_COMPLETADO.docx en el mismo directorio de la plantilla."
+                "Al generar podrá elegir el nombre y la ubicación\n"
+                "del archivo de salida."
             ),
             font=("Arial", 8),
             fg="gray",
@@ -146,6 +144,9 @@ class MeetingGeneratorApp:
 
     def _select_source_file(self) -> None:
         """Abre el diálogo para seleccionar el documento fuente del programa."""
+        if self._generation_in_progress:
+            return
+
         file_path = filedialog.askopenfilename(
             title="Seleccionar Documento del Programa",
             filetypes=[
@@ -171,6 +172,9 @@ class MeetingGeneratorApp:
 
     def _select_template_file(self) -> None:
         """Abre el diálogo para seleccionar la plantilla S-140."""
+        if self._generation_in_progress:
+            return
+
         file_path = filedialog.askopenfilename(
             title="Seleccionar Plantilla S-140",
             filetypes=[
@@ -196,7 +200,9 @@ class MeetingGeneratorApp:
 
     def _update_generate_button(self) -> None:
         """Actualiza el estado del botón Generar según los archivos seleccionados."""
-        if self.source_path and self.template_path:
+        if self._generation_in_progress:
+            self.generate_button.config(state=tk.DISABLED, bg="#4CAF50")
+        elif self.source_path and self.template_path:
             self.generate_button.config(state=tk.NORMAL, bg="#4CAF50")
             self.status_label.config(
                 text="Listo para generar el documento.",
@@ -209,6 +215,82 @@ class MeetingGeneratorApp:
                 fg="blue",
             )
 
+    def _set_generation_in_progress(self, in_progress: bool) -> None:
+        """Bloquea o restaura todos los controles que pueden cambiar las rutas."""
+        self._generation_in_progress = in_progress
+        if in_progress:
+            self.source_button.config(state=tk.DISABLED)
+            self.template_button.config(state=tk.DISABLED)
+            self.generate_button.config(state=tk.DISABLED, bg="#4CAF50")
+            return
+
+        self.source_button.config(state=tk.NORMAL)
+        self.template_button.config(state=tk.NORMAL)
+        if self.source_path is not None and self.template_path is not None:
+            self.generate_button.config(state=tk.NORMAL, bg="#4CAF50")
+        else:
+            self.generate_button.config(state=tk.DISABLED, bg="#4CAF50")
+
+    def _select_output_file(
+        self,
+        source_path: Path,
+        template_path: Path,
+    ) -> Path | None:
+        """Solicita una ruta de salida y confirma el reemplazo si ya existe."""
+        suggested_path = get_default_output_path(source_path, template_path)
+        selected_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Guardar documento S-140 como",
+            initialdir=str(suggested_path.parent),
+            initialfile=suggested_path.name,
+            defaultextension=".docx",
+            filetypes=[
+                ("Documentos Word", "*.docx"),
+                ("Todos los archivos", "*.*"),
+            ],
+            confirmoverwrite=False,
+        )
+        if not selected_path:
+            return None
+
+        output_path = Path(selected_path)
+        try:
+            resolved_output = output_path.resolve()
+            protected_paths = {
+                source_path.resolve(): "documento fuente",
+                template_path.resolve(): "plantilla",
+            }
+        except (OSError, RuntimeError) as exc:
+            messagebox.showerror(
+                "Ruta de salida inválida",
+                f"No se pudo validar la ruta de salida:\n\n{exc}",
+                parent=self.root,
+            )
+            return None
+
+        collision = protected_paths.get(resolved_output)
+        if collision is not None:
+            messagebox.showerror(
+                "Ruta de salida inválida",
+                (
+                    f"La salida coincide con {collision}.\n\n"
+                    "Elija un archivo diferente para no sobrescribirlo."
+                ),
+                parent=self.root,
+            )
+            return None
+
+        if output_path.exists() and not messagebox.askyesno(
+            "Confirmar reemplazo",
+            (
+                f"El archivo '{output_path.name}' ya existe.\n\n"
+                "¿Desea reemplazarlo?"
+            ),
+            parent=self.root,
+        ):
+            return None
+        return output_path
+
     def _generate_document(self) -> None:
         """
         Ejecuta el proceso de generación del documento completo.
@@ -216,56 +298,84 @@ class MeetingGeneratorApp:
         Realiza el parsing del documento fuente, rellena la plantilla
         y guarda el archivo de salida.
         """
-        if not self.source_path or not self.template_path:
+        if getattr(self, "_generation_in_progress", False):
+            logger.warning("Se ignoró una solicitud de generación reentrante")
+            return
+
+        source_path = self.source_path
+        template_path = self.template_path
+        if source_path is None or template_path is None:
             messagebox.showerror(
                 "Error",
                 "Debe seleccionar ambos archivos antes de generar.",
             )
             return
 
+        self._set_generation_in_progress(True)
         try:
             self.status_label.config(
-                text="Analizando documento fuente...",
-                fg="orange",
+                text="Seleccione dónde guardar el documento...",
+                fg="blue",
             )
-            self.root.update()
+            self.root.update_idletasks()
 
-            # Paso 1: Parsear el documento fuente
-            logger.info("Iniciando procesamiento del documento fuente...")
-            weeks = parse_document(self.source_path)
-
-            if not weeks:
-                messagebox.showwarning(
-                    "Advertencia",
-                    "No se encontraron semanas en el documento fuente.\n"
-                    "Verifique que el documento tenga el formato esperado.",
-                )
+            output_path = self._select_output_file(source_path, template_path)
+            if output_path is None:
                 self.status_label.config(
-                    text="No se encontraron semanas. Verifique el documento.",
-                    fg="red",
+                    text="Generación cancelada. No se modificó ningún archivo.",
+                    fg="blue",
                 )
                 return
 
             self.status_label.config(
-                text=f"Se encontraron {len(weeks)} semanas. Rellenando plantilla...",
+                text="Validando y generando el documento...",
                 fg="orange",
             )
-            self.root.update()
+            output_existed_before = output_path.is_file()
 
-            # Paso 2: Determinar la ruta de salida
-            output_path = get_default_output_path(
-                self.source_path, self.template_path
-            )
-
-            # Paso 3: Rellenar la plantilla
-            logger.info("Rellenando plantilla con %d semanas...", len(weeks))
-            generated_path = fill_template(
-                self.template_path,
-                weeks,
+            logger.info("Iniciando generación fail-closed...")
+            result = generate_document(
+                source_path,
+                template_path,
                 output_path,
             )
 
-            # Paso 4: Notificar éxito
+            generated_path = result.output_path
+            if (
+                not result.succeeded
+                or generated_path is None
+                or not generated_path.is_file()
+            ):
+                details = "\n".join(f"• {error}" for error in result.errors)
+                previous_file_note = (
+                    "\n\nYa existía un archivo en la ruta de salida; "
+                    "no corresponde a esta ejecución."
+                    if output_existed_before
+                    else ""
+                )
+                error_message = (
+                    "No se confirmó un archivo nuevo para esta ejecución.\n\n"
+                    f"Semanas escritas: {result.written_weeks}\n"
+                    f"Semanas omitidas: {result.omitted_weeks}\n\n"
+                    f"Errores:\n{details or '• Error no especificado'}"
+                    f"{previous_file_note}"
+                )
+                logger.error(
+                    "Generación fallida: escritas=%d omitidas=%d errores=%s",
+                    result.written_weeks,
+                    result.omitted_weeks,
+                    result.errors,
+                )
+                messagebox.showerror("Error de generación", error_message)
+                self.status_label.config(
+                    text=(
+                        "No se generó un archivo nuevo. "
+                        f"Semanas omitidas: {result.omitted_weeks}."
+                    ),
+                    fg="red",
+                )
+                return
+
             self.status_label.config(
                 text=f"Documento generado exitosamente: {generated_path.name}",
                 fg="green",
@@ -276,7 +386,8 @@ class MeetingGeneratorApp:
                 f"Documento generado correctamente:\n\n"
                 f"📄 {generated_path.name}\n"
                 f"📁 {generated_path.parent}\n\n"
-                f"Se procesaron {len(weeks)} semanas.\n"
+                f"Se escribieron {result.written_weeks} semanas.\n"
+                f"Se omitieron {result.omitted_weeks} semanas.\n"
                 f"Consulte 'meeting_generator.log' para más detalles.",
             )
 
@@ -296,6 +407,8 @@ class MeetingGeneratorApp:
                 text=f"Error: {str(exc)[:80]}",
                 fg="red",
             )
+        finally:
+            self._set_generation_in_progress(False)
 
     def run(self) -> None:
         """Ejecuta la aplicación."""

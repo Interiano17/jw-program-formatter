@@ -2,8 +2,18 @@
 
 set -euo pipefail
 
-project_dir="/home/interiano/Projects/program_automation"
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$project_dir"
 
-export PYTHONPATH="$project_dir${PYTHONPATH:+:$PYTHONPATH}"
-exec "$project_dir/.venv/bin/python" -m meeting_generator.main
+if [[ -x "$project_dir/.venv/bin/python" ]]; then
+    python_executable="$project_dir/.venv/bin/python"
+elif [[ -x "$project_dir/.venv/Scripts/python.exe" ]]; then
+    python_executable="$project_dir/.venv/Scripts/python.exe"
+elif command -v python3 >/dev/null 2>&1; then
+    python_executable="$(command -v python3)"
+else
+    printf 'Error: no se encontró Python 3 ni un entorno virtual .venv.\n' >&2
+    exit 1
+fi
+
+exec "$python_executable" -m meeting_generator

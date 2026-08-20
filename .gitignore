@@ -1,3 +1,11 @@
 *.docx
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 /meeting_debug.json
 /meeting_generator.log

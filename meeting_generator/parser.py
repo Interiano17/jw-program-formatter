@@ -9,7 +9,7 @@ Estructura real del documento:
 - Contenido de cada semana (puntos) en TABLAS de 3 columnas.
 - Las secciones se detectan por sus encabezados, no por rango de números.
 
-Arquitectura dinámica: sin límites fijos en ninguna sección.
+El resultado solo se devuelve si todas las semanas cumplen el contrato.
 """
 
 import logging
@@ -17,31 +17,30 @@ from pathlib import Path
 from typing import Optional
 
 from docx import Document
+from docx.document import Document as DocxDocument
 
 from .config import (
-    RE_WEEK_HEADER,
-    RE_DATE,
-    RE_WEEKLY_READING,
-    RE_PRESIDENT_SONG,
-    RE_POINT_TITLE_WITH_DURATION,
-    RE_SONG,
-    RE_CONCLUSION_WORDS,
-    RE_FINAL_PRAYER,
-    RE_BIBLE_STUDY,
-    RE_DURATION,
     CHRISTIAN_LIFE_PRE_STUDY_MINUTES,
     DEFAULT_DURATIONS,
+    RE_BIBLE_STUDY,
+    RE_CONCLUSION_WORDS,
+    RE_DATE,
+    RE_FINAL_PRAYER,
+    RE_PRESIDENT_SONG,
+    RE_SONG,
+    RE_WEEK_HEADER,
+    RE_WEEKLY_READING,
 )
-from .models import MeetingWeek, Assignment, Participant
+from .models import Assignment, MeetingWeek, Participant
 from .utils import (
     clean_text,
+    extract_number,
     normalize_person_name,
     normalize_sentence_case,
-    split_names,
     remove_name_suffix,
-    is_empty_or_whitespace,
-    extract_number,
+    split_names,
 )
+from .validation import GenerationValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -51,25 +50,44 @@ class ProgramParser:
 
     def __init__(self, file_path: Path):
         self.file_path: Path = file_path
-        self.document: Optional[Document] = None
+        self.document: Optional[DocxDocument] = None
         self.weeks: list[MeetingWeek] = []
+        self.detected_week_count = 0
 
     def parse(self) -> list[MeetingWeek]:
-        """Ejecuta el análisis completo del documento."""
+        """Analiza y valida el documento sin devolver resultados parciales."""
         logger.info("Iniciando análisis: %s", self.file_path)
-        self.document = Document(self.file_path)
+        self.document = Document(str(self.file_path))
         self.weeks = []
+        self.detected_week_count = 0
+        issues: list[str] = []
 
         week_headers = self._extract_week_headers_from_paragraphs()
         logger.info("Encabezados encontrados: %d semanas", len(week_headers))
 
         tables = self.document.tables
         logger.info("Tablas encontradas: %d", len(tables))
+        self.detected_week_count = max(len(week_headers), len(tables))
+        if not tables:
+            issues.append("el documento no contiene tablas de semanas")
+        if len(week_headers) != len(tables):
+            issues.append(
+                "la cantidad de encabezados "
+                f"({len(week_headers)}) no coincide con la de tablas ({len(tables)})"
+            )
 
         for week_index, table in enumerate(tables):
             try:
-                header_data = week_headers[week_index] if week_index < len(week_headers) else {}
-                meeting_week = self._parse_week_from_table(table, week_index + 1, header_data)
+                header_data = (
+                    week_headers[week_index]
+                    if week_index < len(week_headers)
+                    else {}
+                )
+                meeting_week = self._parse_week_from_table(
+                    table,
+                    week_index + 1,
+                    header_data,
+                )
 
                 logger.info(
                     "Sem %d: %s | Pres=%s | T=%d M=%d CV=%d",
@@ -84,7 +102,20 @@ class ProgramParser:
 
             except Exception as exc:
                 logger.error("Error tabla %d: %s", week_index + 1, exc, exc_info=True)
-                continue
+                issues.append(
+                    f"tabla {week_index + 1}: no se pudo analizar "
+                    f"({type(exc).__name__}: {exc})"
+                )
+
+        for week in self.weeks:
+            if not week.is_valid():
+                issues.extend(
+                    f"semana {week.week_index}: {issue}"
+                    for issue in week.validation_errors()
+                )
+
+        if issues:
+            raise GenerationValidationError("Documento fuente inválido", issues)
 
         logger.info("Análisis completado. %d semanas extraídas.", len(self.weeks))
         return self.weeks
@@ -111,17 +142,10 @@ class ProgramParser:
                 if current_header:
                     headers.append(current_header)
                 current_header = {"raw": stripped}
-                date_match = RE_DATE.search(stripped)
-                current_header["date"] = (
-                    normalize_sentence_case(date_match.group(1))
-                    if date_match
-                    else normalize_sentence_case(stripped)
-                )
-                read_match = RE_WEEKLY_READING.search(stripped)
-                if read_match:
-                    current_header["weekly_reading"] = normalize_sentence_case(
-                        read_match.group(0)
-                    )
+                date, weekly_reading = self._extract_week_header_fields(stripped)
+                current_header["date"] = date
+                if weekly_reading:
+                    current_header["weekly_reading"] = weekly_reading
                 continue
 
             pres_match = RE_PRESIDENT_SONG.search(stripped)
@@ -135,13 +159,42 @@ class ProgramParser:
             if "weekly_reading" not in current_header and current_header:
                 read_match = RE_WEEKLY_READING.search(stripped)
                 if read_match:
-                    current_header["weekly_reading"] = normalize_sentence_case(
+                    current_header["weekly_reading"] = self._normalize_weekly_reading(
                         read_match.group(0)
                     )
 
         if current_header:
             headers.append(current_header)
         return headers
+
+    @staticmethod
+    def _extract_week_header_fields(header: str) -> tuple[str, str]:
+        """Separa fecha y lectura usando la posición real de la lectura."""
+        cleaned_header = clean_text(header)
+        read_match = RE_WEEKLY_READING.search(cleaned_header)
+        date_end = read_match.start() if read_match else len(cleaned_header)
+        date_match = RE_DATE.search(cleaned_header[:date_end])
+        date_text = date_match.group(1) if date_match else ""
+        date = normalize_sentence_case(date_text.rstrip(" \t.,;:-–—"))
+        weekly_reading = (
+            ProgramParser._normalize_weekly_reading(read_match.group(0))
+            if read_match
+            else ""
+        )
+        return date, weekly_reading
+
+    @staticmethod
+    def _normalize_weekly_reading(reading: str) -> str:
+        """Normaliza la lectura y conserva la inicial tras un ordinal."""
+        normalized = normalize_sentence_case(reading)
+        for index, character in enumerate(normalized):
+            if character.isalpha():
+                return (
+                    normalized[:index]
+                    + character.upper()
+                    + normalized[index + 1 :]
+                )
+        return normalized
 
     # ------------------------------------------------------------------
     # Parseo de semana desde tabla
@@ -590,8 +643,6 @@ class ProgramParser:
         if not person_text:
             return participants
 
-        # Dividir por //
-        parts = RE_DURATION.split(person_text) if "//" in person_text else [person_text]
         # Usar split_names que ya maneja //
         name1, name2 = split_names(person_text)
 
