@@ -216,6 +216,27 @@ def build_secondary_source(path: Path) -> Path:
     return _build_source(path, weeks)
 
 
+def build_source_with_auxiliary_table(path: Path) -> Path:
+    """Genera dos semanas separadas por una tabla ajena al programa."""
+    weeks = (
+        _standard_week(
+            "1 AL 7 ENERO",
+            "ISAÍAS 1-3",
+            opening_song=1,
+            intermediate_song=2,
+            closing_song=3,
+        ),
+        _standard_week(
+            "8 AL 14 ENERO",
+            "OSEAS 1-3",
+            opening_song=4,
+            intermediate_song=5,
+            closing_song=6,
+        ),
+    )
+    return _build_source(path, weeks, add_auxiliary_after_first=True)
+
+
 def _standard_week(
     date: str,
     reading: str,
@@ -276,14 +297,21 @@ def _standard_week(
     )
 
 
-def _build_source(path: Path, weeks: tuple[WeekFixture, ...]) -> Path:
+def _build_source(
+    path: Path,
+    weeks: tuple[WeekFixture, ...],
+    *,
+    add_auxiliary_after_first: bool = False,
+) -> Path:
     document = Document()
     document.core_properties.title = "Fuente sintética para pruebas"
     document.core_properties.author = ""
 
-    for week in weeks:
+    for index, week in enumerate(weeks):
         _add_week_header(document, week)
         _add_week_table(document, week)
+        if add_auxiliary_after_first and index == 0:
+            document.add_table(rows=1, cols=1).cell(0, 0).text = "Nota auxiliar"
 
     path.parent.mkdir(parents=True, exist_ok=True)
     document.save(path)

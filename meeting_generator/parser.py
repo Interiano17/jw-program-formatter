@@ -66,17 +66,23 @@ class ProgramParser:
         logger.info("Encabezados encontrados: %d semanas", len(week_headers))
 
         tables = self.document.tables
-        logger.info("Tablas encontradas: %d", len(tables))
-        self.detected_week_count = max(len(week_headers), len(tables))
-        if not tables:
+        program_tables = [table for table in tables if self._is_program_table(table)]
+        logger.info(
+            "Tablas encontradas: %d; tablas de programa: %d",
+            len(tables),
+            len(program_tables),
+        )
+        self.detected_week_count = max(len(week_headers), len(program_tables))
+        if not program_tables:
             issues.append("el documento no contiene tablas de semanas")
-        if len(week_headers) != len(tables):
+        if len(week_headers) != len(program_tables):
             issues.append(
                 "la cantidad de encabezados "
-                f"({len(week_headers)}) no coincide con la de tablas ({len(tables)})"
+                f"({len(week_headers)}) no coincide con la de tablas de programa "
+                f"({len(program_tables)})"
             )
 
-        for week_index, table in enumerate(tables):
+        for week_index, table in enumerate(program_tables):
             try:
                 header_data = (
                     week_headers[week_index]
@@ -119,6 +125,18 @@ class ProgramParser:
 
         logger.info("Análisis completado. %d semanas extraídas.", len(self.weeks))
         return self.weeks
+
+    def _is_program_table(self, table) -> bool:
+        """Distingue una tabla de semana de una tabla auxiliar."""
+        sections: set[str] = set()
+        for row in table.rows:
+            if len(row.cells) > 1:
+                section = self._detect_section_from_lines(
+                    self._split_cell_lines(row.cells[1].text)
+                )
+                if section:
+                    sections.add(section)
+        return sections == {"treasures", "ministry", "christian_life"}
 
     # ------------------------------------------------------------------
     # Encabezados desde párrafos (sin cambios)
@@ -515,8 +533,8 @@ class ProgramParser:
 
         Estrategia corregida:
         1. Reconstruye el texto completo uniendo todas las líneas relevantes.
-        2. Extrae la duración del FINAL del texto completo (regex tolerante).
-        3. El resto del texto (sin la duración) es el título.
+        2. Extrae la última duración del texto completo (regex tolerante).
+        3. El resto del texto, incluido lo posterior a la duración, es el título.
         4. Extrae participantes desde person_text (columna separada).
         """
         import re as re_module
@@ -576,9 +594,7 @@ class ProgramParser:
             return assignment
 
         # ------------------------------------------------------------------
-        # Paso 3: Extraer duración del FINAL del texto completo
-        # La duración aparece al final, ej: "(10 minutos)", "(3 mins.)", "(5 minutos)."
-        # Usamos un regex que busca el ÚLTIMO patrón de duración.
+        # Paso 3: Extraer la última duración del texto completo.
         # ------------------------------------------------------------------
         # Buscar la ÚLTIMA ocurrencia de duración en CUALQUIER parte del texto
         # (no solo al final, porque puede haber texto después como "(parte 1)")
@@ -595,10 +611,10 @@ class ProgramParser:
             assignment.duration_minutes = duration_minutes
             assignment.duration_text = f"{duration_minutes} mins."
 
-            # El título es todo lo que está ANTES de la duración
-            title = full_text[:dur_match.start()].strip()
-            # Limpiar puntuación residual al final del título
-            title = title.rstrip('.').rstrip(',').strip()
+            # Se conserva cualquier aclaración escrita después de la duración.
+            title = clean_text(
+                full_text[:dur_match.start()] + full_text[dur_match.end():]
+            ).strip("., ")
             assignment.title = title
         else:
             # Sin duración encontrada: todo el texto es el título
@@ -649,19 +665,19 @@ class ProgramParser:
         if is_bible_study:
             # Roles: Conductor / Lector
             if name1:
-                participants.append(Participant(name=remove_name_suffix(name1), role="Conductor"))
+                participants.append(Participant(name=name1, role="Conductor"))
             if name2:
-                participants.append(Participant(name=remove_name_suffix(name2), role="Lector"))
+                participants.append(Participant(name=name2, role="Lector"))
         else:
             # Roles genéricos: Estudiante / Ayudante
             if name1:
-                participants.append(Participant(name=remove_name_suffix(name1), role="Estudiante"))
+                participants.append(Participant(name=name1, role="Estudiante"))
             if name2:
-                participants.append(Participant(name=remove_name_suffix(name2), role="Ayudante"))
+                participants.append(Participant(name=name2, role="Ayudante"))
 
         # Si no se detectó // pero hay nombre, es un solo participante
         if not participants and person_text.strip():
-            cleaned = remove_name_suffix(person_text)
+            cleaned = normalize_person_name(remove_name_suffix(person_text))
             if cleaned:
                 participants.append(Participant(name=cleaned, role=""))
 

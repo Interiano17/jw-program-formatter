@@ -107,8 +107,12 @@ def split_names(text: str) -> tuple[str, str]:
 
     parts = RE_NAME_SEPARATOR.split(text, maxsplit=1)
 
-    primary = normalize_person_name(parts[0]) if len(parts) > 0 else ""
-    secondary = normalize_person_name(parts[1]) if len(parts) > 1 else ""
+    primary = (
+        normalize_person_name(remove_name_suffix(parts[0])) if len(parts) > 0 else ""
+    )
+    secondary = (
+        normalize_person_name(remove_name_suffix(parts[1])) if len(parts) > 1 else ""
+    )
 
     return (primary, secondary)
 

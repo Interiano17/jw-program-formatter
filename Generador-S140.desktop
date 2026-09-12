@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Generador S-140
+Comment=Genera el programa S-140
+Exec=/home/interiano/Projects/program_automation/launch_meeting_generator.sh
+TryExec=/home/interiano/Projects/program_automation/launch_meeting_generator.sh
+Path=/home/interiano/Projects/program_automation
+Icon=x-office-document
+Terminal=false
+StartupNotify=true
+Categories=Office;

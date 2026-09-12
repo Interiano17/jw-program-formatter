@@ -40,6 +40,17 @@ python -m pip install -e .
 dependencia externa de ejecución es `python-docx`; `tkinter`, `pathlib`, `re`,
 `typing` y `logging` pertenecen a la biblioteca estándar de Python.
 
+### Nombre de la congregación
+
+El nombre no se guarda en el repositorio. Antes de iniciar la aplicación,
+defínalo en el entorno local:
+
+```bash
+export MEETING_GENERATOR_CONGREGATION_NAME="Su congregación"
+```
+
+Si no se define, el encabezado usa el valor genérico `Congregación`.
+
 ---
 
 ## ▶️ Ejecución

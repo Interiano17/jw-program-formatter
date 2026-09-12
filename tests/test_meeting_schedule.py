@@ -15,9 +15,17 @@ from meeting_generator.models import Assignment
 from meeting_generator.parser import ProgramParser, parse_document
 from meeting_generator.results import GenerationResult
 from meeting_generator.template_writer import TemplateWriter, fill_template
-from meeting_generator.utils import normalize_person_name, normalize_sentence_case
+from meeting_generator.utils import (
+    normalize_person_name,
+    normalize_sentence_case,
+    split_names,
+)
 from meeting_generator.validation import GenerationValidationError
-from tests.source_fixtures import build_primary_source, build_secondary_source
+from tests.source_fixtures import (
+    build_primary_source,
+    build_secondary_source,
+    build_source_with_auxiliary_table,
+)
 from tests.template_fixture import build_template
 
 _FIXTURE_DIRECTORY: tempfile.TemporaryDirectory[str] | None = None
@@ -98,6 +106,27 @@ class ParserRegressionTests(unittest.TestCase):
 
         self.assertEqual(first_week.intermediate_song, "49")
         self.assertEqual(first_week.closing_song, "61")
+
+    def test_auxiliary_table_does_not_shift_week_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source_path = Path(directory) / "auxiliary-table.docx"
+            build_source_with_auxiliary_table(source_path)
+
+            weeks = parse_document(source_path)
+
+        self.assertEqual(len(weeks), 2)
+        self.assertEqual(weeks[0].weekly_reading, "Isaías 1-3")
+        self.assertEqual(weeks[1].weekly_reading, "Oseas 1-3")
+
+    def test_title_preserves_text_after_duration(self) -> None:
+        assignment = ProgramParser(Path("unused.docx"))._create_assignment(
+            1,
+            ["Tema (5 minutos) (parte 1)"],
+            "",
+        )
+
+        self.assertEqual(assignment.duration_minutes, 5)
+        self.assertEqual(assignment.title, "Tema (parte 1)")
 
 
 class WeekHeaderParsingTests(unittest.TestCase):
@@ -644,6 +673,28 @@ class ValidationContractTests(unittest.TestCase):
         )
         self._assert_closed_failure(result, output_path, expected_omitted=1)
 
+    def test_writer_rejects_marker_that_cannot_be_cleared_from_unused_copy(self) -> None:
+        output_path = self._output_path()
+        original_remove_text = TemplateWriter._remove_text
+
+        def leave_title_marker(writer, cell, text: str) -> None:
+            if text != "[Título]":
+                original_remove_text(writer, cell, text)
+
+        with patch.object(
+            TemplateWriter,
+            "_remove_text",
+            new=leave_title_marker,
+        ):
+            result = fill_template(
+                TEMPLATE_DOCUMENT,
+                [self.valid_weeks[0]],
+                output_path,
+            )
+
+        self.assertIn("[Título]", result.errors[0])
+        self._assert_closed_failure(result, output_path, expected_omitted=1)
+
 
 class GenerationResultTests(unittest.TestCase):
     @classmethod
@@ -1095,6 +1146,12 @@ class NameNormalizationTests(unittest.TestCase):
     def test_only_fully_uppercase_names_are_changed(self) -> None:
         self.assertEqual(normalize_person_name("JUAN PÉREZ"), "Juan Pérez")
         self.assertEqual(normalize_person_name("Juan McDONALD"), "Juan McDONALD")
+
+    def test_suffix_is_removed_before_uppercase_name_is_normalized(self) -> None:
+        self.assertEqual(
+            split_names("HELENA MARTÍNEZ (h) // CARLOS EJEMPLO (p)"),
+            ("Helena Martínez", "Carlos Ejemplo"),
+        )
 
     def test_dates_and_readings_use_sentence_case(self) -> None:
         self.assertEqual(

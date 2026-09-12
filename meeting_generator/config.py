@@ -6,6 +6,7 @@ palabras clave y configuraciones utilizadas por el parser y el writer.
 """
 
 import logging
+import os
 import re
 
 # ---------------------------------------------------------------------------
@@ -15,8 +16,12 @@ import re
 # Nombre del archivo de salida generado
 OUTPUT_FILENAME: str = "S-140_COMPLETADO.docx"
 
-# Nombre mostrado en el encabezado de cada página del formulario.
-CONGREGATION_NAME: str = "Congregación Loarque"
+# Nombre mostrado en el encabezado de cada página del formulario. Configure el
+# nombre real fuera del repositorio mediante MEETING_GENERATOR_CONGREGATION_NAME.
+CONGREGATION_NAME: str = os.environ.get(
+    "MEETING_GENERATOR_CONGREGATION_NAME",
+    "Congregación",
+)
 
 # Nombre del archivo de log
 LOG_FILENAME: str = "meeting_generator.log"
@@ -152,8 +157,8 @@ RE_WEEKLY_READING: re.Pattern = re.compile(
 )
 
 # Detección del presidente y canción inicial
-# Ejemplo: "PRESIDENTE: GERMAN CERRATO. CANCIÓN 123:"
-# También: "PRESIDENTE. MIGUEL HERNÁNDEZ. CANCIÓN 44"
+# Ejemplo: "PRESIDENTE: ANA EJEMPLO. CANCIÓN 123:"
+# También: "PRESIDENTE. CARLOS EJEMPLO. CANCIÓN 44"
 RE_PRESIDENT_SONG: re.Pattern = re.compile(
     r"PRESIDENTE\s*[:\.,]\s*[\.,]?\s*(.+?)\s*[\.,]?\s*CANCI[OÓ]N\s*(\d+)",
     re.IGNORECASE

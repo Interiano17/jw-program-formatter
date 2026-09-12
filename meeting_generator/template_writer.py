@@ -158,8 +158,6 @@ class TemplateWriter:
         if issues:
             raise GenerationValidationError("No se puede generar el documento", issues)
 
-        self._write_congregation_name()
-
         write_issues: list[str] = []
         for week, copy in zip(weeks, copies):
             self._process_one_copy(
@@ -170,35 +168,12 @@ class TemplateWriter:
                 copy.structure,
             )
             write_issues.extend(self._written_content_issues(week, copy))
-            unresolved = self._find_markers_in_range(
-                copy.table,
-                copy.start_row,
-                copy.end_row,
-            )
-            if unresolved:
-                write_issues.append(
-                    f"semana {week.week_index}: quedaron marcadores sin resolver: "
-                    f"{', '.join(unresolved)}"
-                )
 
-        congregation_markers = self._find_document_markers(
-            ("[NOMBRE DE LA CONGREGACIÓN]",)
-        )
-        if congregation_markers:
-            write_issues.append("no se pudo escribir el nombre de la congregación")
-        if write_issues:
-            raise GenerationValidationError(
-                "La plantilla no se pudo completar",
-                write_issues,
-            )
-
-        self._clear_unused_copies(copies[len(weeks) :])
-        remaining = self._find_document_markers()
+        remaining = self._clear_unused_copies_and_find_markers(copies, len(weeks))
         if remaining:
-            raise GenerationValidationError(
-                "La plantilla contiene marcadores residuales",
-                [f"sin resolver: {', '.join(remaining)}"],
-            )
+            write_issues.append(f"sin resolver: {', '.join(remaining)}")
+        if write_issues:
+            raise GenerationValidationError("La plantilla no se pudo completar", write_issues)
         logger.info("Marcadores residuales tras la validación: 0")
 
         created_path = self._save_document_atomically(output_path)
@@ -1271,76 +1246,76 @@ class TemplateWriter:
     def _clear_row(self, table, row_idx: int) -> None:
         if row_idx >= len(table.rows):
             return
+        seen_cells: set[object] = set()
         for cell in table.rows[row_idx].cells:
-            self._clear_cell(cell)
+            if cell._tc in seen_cells:
+                continue
+            seen_cells.add(cell._tc)
+            text = cell.text
+            for marker in PLACEHOLDERS:
+                if marker in text:
+                    self._remove_text(cell, marker)
+                    text = cell.text
 
-    def _clear_cell(self, cell) -> None:
-        for ph in PLACEHOLDERS:
-            if ph in cell.text:
-                self._remove_text(cell, ph)
-
-    def _write_congregation_name(self) -> None:
+    def _clear_unused_copies_and_find_markers(
+        self,
+        copies: list[TemplateCopy],
+        used_copy_count: int,
+    ) -> list[str]:
+        """Limpia y valida cada celda física de la plantilla en un solo pase."""
         if self.document is None:
-            return
-        marker = "[NOMBRE DE LA CONGREGACIÓN]"
+            return []
+
+        unused_ranges: dict[object, list[tuple[int, int]]] = {}
+        for copy in copies[used_copy_count:]:
+            unused_ranges.setdefault(copy.table._tbl, []).append(
+                (copy.start_row, copy.end_row)
+            )
+
+        congregation_marker = "[NOMBRE DE LA CONGREGACIÓN]"
+        markers_to_clear = tuple(
+            marker for marker in TEMPLATE_MARKERS if marker != congregation_marker
+        )
+        cells_by_identity: dict[object, set[int]] = {}
         for table in self.document.tables:
+            for row_index, row in enumerate(table.rows):
+                for cell in row.cells:
+                    cells_by_identity.setdefault(cell._tc, set()).add(row_index)
+
+        found: set[str] = set()
+        for table in self.document.tables:
+            ranges = unused_ranges.get(table._tbl, [])
             seen_cells: set[object] = set()
-            for row in table.rows:
+            for row_index, row in enumerate(table.rows):
+                time_cell = row.cells[0]._tc if row.cells else None
                 for cell in row.cells:
                     if cell._tc in seen_cells:
                         continue
                     seen_cells.add(cell._tc)
-                    if marker in cell.text:
-                        self._replace_in_cell(cell, marker, CONGREGATION_NAME)
-
-    def _clear_unused_copies(self, copies: list[TemplateCopy]) -> None:
-        """Limpia únicamente formularios que no recibieron una semana."""
-        for copy in copies:
-            seen_cells: set[object] = set()
-            for row_index in range(copy.start_row, copy.end_row):
-                for cell in copy.table.rows[row_index].cells:
-                    if cell._tc in seen_cells:
-                        continue
-                    seen_cells.add(cell._tc)
-                    for marker in TEMPLATE_MARKERS:
-                        if marker in cell.text:
-                            self._remove_text(cell, marker)
-                self._clear_time_in_row(copy.table, row_index)
-
-    def _find_markers_in_range(
-        self,
-        table: Table,
-        start_row: int,
-        end_row: int,
-        markers: Optional[tuple[str, ...]] = None,
-    ) -> list[str]:
-        selected_markers = TEMPLATE_MARKERS if markers is None else markers
-        found: set[str] = set()
-        seen_cells: set[object] = set()
-        for row_index in range(start_row, end_row):
-            row = table.rows[row_index]
-            if markers is None and row.cells and row.cells[0].text.strip() == "0:00":
-                found.add("0:00")
-            for cell in row.cells:
-                if cell._tc in seen_cells:
-                    continue
-                seen_cells.add(cell._tc)
-                found.update(
-                    marker for marker in selected_markers if marker in cell.text
-                )
-        return sorted(found)
-
-    def _find_document_markers(
-        self,
-        markers: Optional[tuple[str, ...]] = None,
-    ) -> list[str]:
-        if self.document is None:
-            return []
-        found: set[str] = set()
-        for table in self.document.tables:
-            found.update(
-                self._find_markers_in_range(table, 0, len(table.rows), markers)
-            )
+                    cell_rows = cells_by_identity[cell._tc]
+                    is_unused = bool(cell_rows) and all(
+                        any(start <= cell_row < end for start, end in ranges)
+                        for cell_row in cell_rows
+                    )
+                    text = cell.text
+                    if congregation_marker in text:
+                        self._replace_in_cell(
+                            cell,
+                            congregation_marker,
+                            CONGREGATION_NAME,
+                        )
+                        text = cell.text
+                    if is_unused:
+                        for marker in markers_to_clear:
+                            if marker in text:
+                                self._remove_text(cell, marker)
+                                text = cell.text
+                        if cell._tc == time_cell and text.strip() == "0:00":
+                            self._remove_text(cell, "0:00")
+                            text = cell.text
+                    found.update(marker for marker in TEMPLATE_MARKERS if marker in text)
+                    if cell._tc == time_cell and text.strip() == "0:00":
+                        found.add("0:00")
         return sorted(found)
 
     # ==================================================================
