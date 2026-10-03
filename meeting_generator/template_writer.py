@@ -30,6 +30,7 @@ from docx.table import Table
 from .config import (
     CONGREGATION_NAME,
     DEFAULT_DURATIONS,
+    INTERMEDIATE_SONG_DURATION_OVERRIDES,
     MEETING_START_MINUTES,
     MINISTRY_TRANSITION_MINUTES,
     OPENING_PRAYER_DURATION_MINUTES,
@@ -174,6 +175,7 @@ class TemplateWriter:
             write_issues.append(f"sin resolver: {', '.join(remaining)}")
         if write_issues:
             raise GenerationValidationError("La plantilla no se pudo completar", write_issues)
+        self._remove_unused_structure(copies, weeks)
         logger.info("Marcadores residuales tras la validación: 0")
 
         created_path = self._save_document_atomically(output_path)
@@ -1131,7 +1133,9 @@ class TemplateWriter:
         self._add_schedule_event(
             events,
             struct.get("cancion_intermedia_row"),
-            SONG_DURATION_MINUTES,
+            INTERMEDIATE_SONG_DURATION_OVERRIDES.get(
+                (week.date, week.weekly_reading), SONG_DURATION_MINUTES
+            ),
         )
 
         christian_life = [
@@ -1317,6 +1321,61 @@ class TemplateWriter:
                     if cell._tc == time_cell and text.strip() == "0:00":
                         found.add("0:00")
         return sorted(found)
+
+    def _remove_unused_structure(
+        self,
+        copies: list[TemplateCopy],
+        weeks: list[MeetingWeek],
+    ) -> None:
+        """Elimina formularios y filas de asignación que no se usan."""
+        copies_by_table: dict[object, list[TemplateCopy]] = {}
+        for copy in copies:
+            copies_by_table.setdefault(copy.table._tbl, []).append(copy)
+        unused_by_table: dict[object, list[TemplateCopy]] = {}
+        for copy in copies[len(weeks):]:
+            unused_by_table.setdefault(copy.table._tbl, []).append(copy)
+
+        removed_tables: set[object] = set()
+        for unused_copies in unused_by_table.values():
+            table = unused_copies[0].table
+            if len(unused_copies) == len(copies_by_table[table._tbl]):
+                next_element = table._tbl.getnext()
+                parent = table._tbl.getparent()
+                parent.remove(table._tbl)
+                if next_element is not None and not "".join(next_element.itertext()).strip():
+                    parent.remove(next_element)
+                removed_tables.add(table._tbl)
+                continue
+            for copy in sorted(unused_copies, key=lambda item: item.start_row, reverse=True):
+                for row_index in range(copy.end_row - 1, copy.start_row - 1, -1):
+                    table._tbl.remove(table.rows[row_index]._tr)
+            if not table.rows:
+                next_element = table._tbl.getnext()
+                parent = table._tbl.getparent()
+                parent.remove(table._tbl)
+                if next_element is not None and not "".join(next_element.itertext()).strip():
+                    parent.remove(next_element)
+                removed_tables.add(table._tbl)
+
+        rows_to_remove: dict[object, tuple[Table, set[int]]] = {}
+        for week, copy in zip(weeks, copies):
+            if copy.table._tbl in removed_tables:
+                continue
+            christian_life = [
+                assignment
+                for assignment in week.christian_life
+                if not assignment.is_bible_study and not assignment.is_conclusion
+            ]
+            unused_rows = (
+                copy.structure["ministry_rows"][len(week.ministry):]
+                + copy.structure["cv_normal_rows"][len(christian_life):]
+            )
+            table_rows = rows_to_remove.setdefault(copy.table._tbl, (copy.table, set()))
+            table_rows[1].update(row.row_index for row in unused_rows)
+
+        for table, row_indexes in rows_to_remove.values():
+            for row_index in sorted(row_indexes, reverse=True):
+                table._tbl.remove(table.rows[row_index]._tr)
 
     # ==================================================================
     # Reemplazo de texto preservando formato (nivel de runs)

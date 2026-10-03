@@ -49,7 +49,7 @@ defínalo en el entorno local:
 export MEETING_GENERATOR_CONGREGATION_NAME="Su congregación"
 ```
 
-Si no se define, el encabezado usa el valor genérico `Congregación`.
+Si no se define, el encabezado usa `Congregación Loarque`.
 
 ---
 

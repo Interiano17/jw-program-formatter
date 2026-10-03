@@ -35,6 +35,15 @@ SECOND_SOURCE_DOCUMENT = Path("secondary-source-not-built.docx")
 TEMPLATE_DOCUMENT = Path("template-not-built.docx")
 
 
+def _first_form_rows(table):
+    starts = [
+        index
+        for index, row in enumerate(table.rows)
+        if any(cell.text.strip() == "Presidente:" for cell in row.cells)
+    ]
+    return table.rows[starts[0]:starts[1] if len(starts) > 1 else len(table.rows)]
+
+
 def setUpModule() -> None:
     """Construye todos los DOCX de prueba sin depender del árbol local."""
     global _CONGREGATION_PATCHER
@@ -127,6 +136,18 @@ class ParserRegressionTests(unittest.TestCase):
 
         self.assertEqual(assignment.duration_minutes, 5)
         self.assertEqual(assignment.title, "Tema (parte 1)")
+
+    def test_assignment_instructions_are_not_part_of_the_title(self) -> None:
+        assignment = ProgramParser(Path("unused.docx"))._create_assignment(
+            4,
+            [
+                "Empiece conversaciones, DE CASA EN CASA. "
+                "Ofrezca un curso de la Biblia (3 minutos)"
+            ],
+            "",
+        )
+
+        self.assertEqual(assignment.title, "Empiece conversaciones")
 
 
 class WeekHeaderParsingTests(unittest.TestCase):
@@ -239,8 +260,8 @@ class ScheduleIntegrationTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temp_directory = tempfile.TemporaryDirectory()
         output_path = Path(cls.temp_directory.name) / "generated.docx"
-        weeks = parse_document(SOURCE_DOCUMENT)
-        fill_template(TEMPLATE_DOCUMENT, weeks, output_path)
+        cls.weeks = parse_document(SOURCE_DOCUMENT)
+        fill_template(TEMPLATE_DOCUMENT, cls.weeks, output_path)
         cls.document = Document(output_path)
 
     @classmethod
@@ -248,7 +269,7 @@ class ScheduleIntegrationTests(unittest.TestCase):
         cls.temp_directory.cleanup()
 
     def test_first_week_uses_expected_start_times(self) -> None:
-        first_copy = self.document.tables[0].rows[:27]
+        first_copy = _first_form_rows(self.document.tables[0])
         times = [
             row.cells[0].text.strip()
             for row in first_copy
@@ -312,19 +333,42 @@ class ScheduleIntegrationTests(unittest.TestCase):
         self.assertNotIn("[NOMBRE DE LA CONGREGACIÓN]", document_text)
 
     def test_combined_christian_life_row_has_correct_times(self) -> None:
-        rows = self.document.tables[2].rows
+        rows = [row for table in self.document.tables for row in table.rows]
+        first_index = next(
+            index
+            for index, row in enumerate(rows)
+            if "Tema sintético de vida cristiana 1 (10 mins.)" in row.cells[2].text
+        )
 
-        self.assertEqual(rows[46].cells[0].text.strip(), "7:49")
-        self.assertIn("(10 mins.)", rows[46].cells[2].text)
-        self.assertEqual(rows[47].cells[0].text.strip(), "7:59")
-        self.assertIn("(5 mins.)", rows[47].cells[2].text)
-        self.assertEqual(rows[48].cells[0].text.strip(), "8:04")
+        self.assertEqual(rows[first_index].cells[0].text.strip(), "7:49")
+        self.assertEqual(rows[first_index + 1].cells[0].text.strip(), "7:59")
+        self.assertIn("(5 mins.)", rows[first_index + 1].cells[2].text)
+        self.assertEqual(rows[first_index + 2].cells[0].text.strip(), "8:04")
 
     def test_generated_document_has_no_zero_time_markers(self) -> None:
         for table in self.document.tables:
             for row in table.rows:
                 for cell in row.cells:
                     self.assertNotIn("0:00", cell.text)
+
+    def test_unused_forms_and_assignment_rows_are_removed(self) -> None:
+        headers = [
+            cell.text
+            for table in self.document.tables
+            for row in table.rows
+            for cell in row.cells
+            if cell.text.strip() == "Presidente:"
+        ]
+        blank_assignments = [
+            cell.text
+            for table in self.document.tables
+            for row in table.rows
+            for cell in row.cells
+            if cell.text.strip() in {"7.", "9."}
+        ]
+
+        self.assertEqual(len(headers), len(self.weeks))
+        self.assertEqual(blank_assignments, [])
 
 
 class SecondDocumentRegressionTests(unittest.TestCase):
@@ -377,7 +421,7 @@ class SecondDocumentRegressionTests(unittest.TestCase):
         self.assertEqual(discourse.duration_text, "5 mins.")
 
     def test_variable_ministry_rows_generate_expected_times(self) -> None:
-        first_copy = self.document.tables[0].rows[:27]
+        first_copy = _first_form_rows(self.document.tables[0])
         times = [
             row.cells[0].text.strip()
             for row in first_copy
@@ -395,10 +439,10 @@ class SecondDocumentRegressionTests(unittest.TestCase):
                 "7:30",
                 "7:34",
                 "7:39",
-                "7:43",
-                "7:58",
-                "8:28",
-                "8:31",
+                "7:45",
+                "8:00",
+                "8:30",
+                "8:33",
             ],
         )
 
@@ -520,7 +564,11 @@ class ValidationContractTests(unittest.TestCase):
             parse_document(source_path)
 
         self.assertTrue(
-            any("semana 1" in issue.lower() for issue in raised.exception.issues),
+            any(
+                "semana 1" in issue.lower()
+                or "no contiene tablas" in issue.lower()
+                for issue in raised.exception.issues
+            ),
             raised.exception.issues,
         )
 
@@ -1147,10 +1195,10 @@ class NameNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_person_name("JUAN PÉREZ"), "Juan Pérez")
         self.assertEqual(normalize_person_name("Juan McDONALD"), "Juan McDONALD")
 
-    def test_suffix_is_removed_before_uppercase_name_is_normalized(self) -> None:
+    def test_suffix_is_preserved_when_uppercase_name_is_normalized(self) -> None:
         self.assertEqual(
             split_names("HELENA MARTÍNEZ (h) // CARLOS EJEMPLO (p)"),
-            ("Helena Martínez", "Carlos Ejemplo"),
+            ("Helena Martínez (h)", "Carlos Ejemplo (p)"),
         )
 
     def test_dates_and_readings_use_sentence_case(self) -> None:

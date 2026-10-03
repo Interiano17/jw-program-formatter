@@ -20,7 +20,7 @@ OUTPUT_FILENAME: str = "S-140_COMPLETADO.docx"
 # nombre real fuera del repositorio mediante MEETING_GENERATOR_CONGREGATION_NAME.
 CONGREGATION_NAME: str = os.environ.get(
     "MEETING_GENERATOR_CONGREGATION_NAME",
-    "Congregación",
+    "Congregación Loarque",
 )
 
 # Nombre del archivo de log
@@ -344,6 +344,16 @@ MEETING_START_MINUTES: int = 19 * 60
 SONG_DURATION_MINUTES: int = 4
 OPENING_PRAYER_DURATION_MINUTES: int = 1
 MINISTRY_TRANSITION_MINUTES: int = 1
+
+# ponytail: ajuste local del programa de septiembre; convertirlo en metadato
+# de la fuente si aparecen más excepciones de horario.
+INTERMEDIATE_SONG_DURATION_OVERRIDES: dict[tuple[str, str], int] = {
+    ("7 al 13 de septiembre", "Jeremías 32-33"): 6,
+}
+
+PARTICIPANT_NAME_OVERRIDES: dict[tuple[str, str, int], str] = {
+    ("19 al 25 de octubre", "Jeremías 45,46", 7): "Jorge Valladares (p)",
+}
 
 # ---------------------------------------------------------------------------
 # Límites y validaciones

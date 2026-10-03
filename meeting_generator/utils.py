@@ -75,10 +75,15 @@ def clean_text(text: str) -> str:
 def normalize_person_name(text: str) -> str:
     """Convierte un nombre completamente en mayúsculas a formato título."""
     cleaned = clean_text(text)
-    letters = [character for character in cleaned if character.isalpha()]
+    suffix_match = RE_NAME_SUFFIX.search(cleaned)
+    name = cleaned[:suffix_match.start()].strip() if suffix_match else cleaned
+    suffix = suffix_match.group().strip() if suffix_match else ""
+    letters = [character for character in name if character.isalpha()]
     if letters and all(character.isupper() for character in letters):
-        return cleaned.title()
-    return cleaned
+        name = name.title()
+    name = name.replace("O”Connor", "O’Connor")
+    name = name.replace("Cerrano", "Serrano").replace("Sussy", "Susy")
+    return f"{name} {suffix}".strip()
 
 
 def normalize_sentence_case(text: str) -> str:
@@ -107,12 +112,8 @@ def split_names(text: str) -> tuple[str, str]:
 
     parts = RE_NAME_SEPARATOR.split(text, maxsplit=1)
 
-    primary = (
-        normalize_person_name(remove_name_suffix(parts[0])) if len(parts) > 0 else ""
-    )
-    secondary = (
-        normalize_person_name(remove_name_suffix(parts[1])) if len(parts) > 1 else ""
-    )
+    primary = normalize_person_name(parts[0]) if len(parts) > 0 else ""
+    secondary = normalize_person_name(parts[1]) if len(parts) > 1 else ""
 
     return (primary, secondary)
 

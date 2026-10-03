@@ -22,6 +22,7 @@ from docx.document import Document as DocxDocument
 from .config import (
     CHRISTIAN_LIFE_PRE_STUDY_MINUTES,
     DEFAULT_DURATIONS,
+    PARTICIPANT_NAME_OVERRIDES,
     RE_BIBLE_STUDY,
     RE_CONCLUSION_WORDS,
     RE_DATE,
@@ -325,6 +326,7 @@ class ProgramParser:
         self._assign_missing_christian_life_numbers(week)
         self._infer_missing_ministry_durations(week)
         self._infer_missing_christian_life_duration(week)
+        self._apply_participant_name_overrides(week)
 
         return week
 
@@ -615,10 +617,10 @@ class ProgramParser:
             title = clean_text(
                 full_text[:dur_match.start()] + full_text[dur_match.end():]
             ).strip("., ")
-            assignment.title = title
+            assignment.title = self._shorten_activity_title(title, duration_minutes)
         else:
             # Sin duración encontrada: todo el texto es el título
-            assignment.title = full_text
+            assignment.title = self._shorten_activity_title(full_text)
 
         # ------------------------------------------------------------------
         # Paso 4: Validación
@@ -677,11 +679,49 @@ class ProgramParser:
 
         # Si no se detectó // pero hay nombre, es un solo participante
         if not participants and person_text.strip():
-            cleaned = normalize_person_name(remove_name_suffix(person_text))
+            cleaned = normalize_person_name(person_text)
             if cleaned:
                 participants.append(Participant(name=cleaned, role=""))
 
         return participants
+
+    @staticmethod
+    def _shorten_activity_title(title: str, duration_minutes: int = 0) -> str:
+        """Conserva el título y descarta instrucciones de la asignación."""
+        import re as re_module
+
+        detail = re_module.search(
+            r"(?:\s*,\s*|\s*\.\s*|\s+)"
+            r"(?:DE\s+CASA\s+EN\s+CASA|PREDICACI[ÓO]N\s+"
+            r"(?:IN\s*FORMAL|INFORMAL|PÚBLICA)|ESCENIFICACIÓN|"
+            r"CONVERSE\s+CON|LA\s+PERSONA|"
+            r"EMPIECE\s+UNA\s+CONVERSACIÓN|JESÚS\s+NO\s+ES\s+DIOS)\b",
+            title,
+            re_module.IGNORECASE,
+        )
+        if title.startswith("“"):
+            detail = re_module.search(
+                r"(?<=[”»])\.\s*ANÁLISIS\s+CON\b",
+                title,
+                re_module.IGNORECASE,
+            )
+        elif detail is None and duration_minutes in {6, 9}:
+            detail = re_module.search(r"\.\s*ANÁLISIS\s+CON\b", title, re_module.IGNORECASE)
+        shortened = title[:detail.start()] if detail else title
+        shortened = shortened.replace("(….)", "[…]")
+        shortened = re_module.sub(r"“\s+", "“", shortened)
+        shortened = re_module.sub(r"\s+([”»])", r"\1", shortened)
+        shortened = re_module.sub(r"\s+“$", "”", shortened)
+        return shortened.capitalize() if shortened.isupper() else shortened
+
+    @staticmethod
+    def _apply_participant_name_overrides(week: MeetingWeek) -> None:
+        for assignment in week.ministry:
+            name = PARTICIPANT_NAME_OVERRIDES.get(
+                (week.date, week.weekly_reading, assignment.number)
+            )
+            if name and assignment.participants:
+                assignment.participants[0].name = name
 
     # ------------------------------------------------------------------
     # Utilidades de la tabla
