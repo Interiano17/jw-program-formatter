@@ -8,9 +8,36 @@ de reunión y el contrato mínimo necesario para generar el formulario.
 import re
 from dataclasses import dataclass, field
 
+from .utils import parse_single_name
+
 
 def _is_positive_integer(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+@dataclass(frozen=True)
+class NameCorrection:
+    """Sustitución explícita de un nombre completo, con su justificación."""
+
+    original_name: str
+    corrected_name: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("nombre original", self.original_name),
+            ("nombre corregido", self.corrected_name),
+            ("motivo", self.reason),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"La corrección requiere un {label} no vacío")
+            if label != "motivo":
+                try:
+                    parse_single_name(value)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"La corrección contiene un {label} inválido: {exc}"
+                    ) from exc
 
 
 @dataclass
@@ -59,32 +86,33 @@ class Assignment:
     def has_participants(self) -> bool:
         """Indica si la asignación tiene al menos un participante."""
         return len(self.participants) > 0 and any(
-            isinstance(p.name, str) and p.name.strip() for p in self.participants
+            isinstance(participant.name, str) and participant.name.strip()
+            for participant in self.participants
         )
 
     def participant_count(self) -> int:
         """Número de participantes con nombre no vacío."""
         return sum(
             1
-            for p in self.participants
-            if isinstance(p.name, str) and p.name.strip()
+            for participant in self.participants
+            if isinstance(participant.name, str) and participant.name.strip()
         )
 
     def first_participant_name(self) -> str:
         """Nombre del primer participante, o cadena vacía."""
-        for p in self.participants:
-            if isinstance(p.name, str) and p.name.strip():
-                return p.name
+        for participant in self.participants:
+            if isinstance(participant.name, str) and participant.name.strip():
+                return participant.name
         return ""
 
     def second_participant_name(self) -> str:
         """Nombre del segundo participante, o cadena vacía."""
         count = 0
-        for p in self.participants:
-            if isinstance(p.name, str) and p.name.strip():
+        for participant in self.participants:
+            if isinstance(participant.name, str) and participant.name.strip():
                 count += 1
                 if count == 2:
-                    return p.name
+                    return participant.name
         return ""
 
     def formatted_participants(self) -> str:
@@ -96,9 +124,9 @@ class Assignment:
         Si no hay: cadena vacía.
         """
         names = [
-            p.name
-            for p in self.participants
-            if isinstance(p.name, str) and p.name.strip()
+            participant.name
+            for participant in self.participants
+            if isinstance(participant.name, str) and participant.name.strip()
         ]
         if len(names) == 0:
             return ""
@@ -150,6 +178,17 @@ class MeetingWeek:
             if not isinstance(value, str) or not value.strip():
                 errors.append(f"falta {field_name}")
 
+        for field_name, value in (
+            ("presidente", self.president),
+            ("oración inicial", self.opening_prayer),
+            ("oración final", self.closing_prayer),
+        ):
+            if isinstance(value, str) and value.strip():
+                try:
+                    parse_single_name(value)
+                except ValueError as exc:
+                    errors.append(f"{field_name}: {exc}")
+
         songs = (
             ("canción inicial", self.opening_song),
             ("canción intermedia", self.intermediate_song),
@@ -183,9 +222,7 @@ class MeetingWeek:
             if assignment.is_bible_study
         ]
         conclusions = [
-            assignment
-            for assignment in self.christian_life
-            if assignment.is_conclusion
+            assignment for assignment in self.christian_life if assignment.is_conclusion
         ]
 
         if not christian_life_normal:
@@ -228,6 +265,12 @@ class MeetingWeek:
                     for participant in assignment.participants
                 ):
                     errors.append(f"{label} contiene un participante sin nombre")
+                for index, participant in enumerate(assignment.participants, start=1):
+                    if isinstance(participant.name, str) and participant.name.strip():
+                        try:
+                            parse_single_name(participant.name)
+                        except ValueError as exc:
+                            errors.append(f"{label}, participante {index}: {exc}")
 
                 if section_name != "Nuestra Vida Cristiana" and (
                     assignment.is_bible_study or assignment.is_conclusion

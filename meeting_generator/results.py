@@ -19,8 +19,15 @@ class GenerationResult:
         if self.output_path is None:
             if self.written_weeks != 0 or not self.errors:
                 raise ValueError("Un resultado sin archivo debe describir el fallo")
-        elif self.errors or self.omitted_weeks != 0 or self.written_weeks == 0:
-            raise ValueError("Un resultado con archivo debe representar éxito completo")
+        elif self.omitted_weeks != 0 or self.written_weeks == 0:
+            raise ValueError(
+                "Un resultado publicado requiere todas las semanas escritas"
+            )
+
+    @property
+    def published(self) -> bool:
+        """Indica si se reemplazó la salida, aunque falle una operación posterior."""
+        return self.output_path is not None
 
     @property
     def succeeded(self) -> bool:
@@ -47,6 +54,23 @@ class GenerationResult:
             written_weeks=written_weeks,
             omitted_weeks=0,
             errors=(),
+            output_path=output_path,
+        )
+
+    @classmethod
+    def published_failure(
+        cls,
+        written_weeks: int,
+        output_path: Path,
+        errors: tuple[str, ...] | list[str],
+    ) -> "GenerationResult":
+        normalized_errors = tuple(error.strip() for error in errors if error.strip())
+        if not normalized_errors:
+            normalized_errors = ("Falló una operación posterior a la publicación",)
+        return cls(
+            written_weeks=written_weeks,
+            omitted_weeks=0,
+            errors=normalized_errors,
             output_path=output_path,
         )
 

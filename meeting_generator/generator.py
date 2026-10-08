@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+from .models import NameCorrection
 from .parser import ProgramParser
 from .results import GenerationResult
 from .template_writer import fill_template
@@ -15,9 +16,11 @@ def generate_document(
     source_path: Path,
     template_path: Path,
     output_path: Path,
+    *,
+    name_corrections: tuple[NameCorrection, ...] = (),
 ) -> GenerationResult:
-    """Genera el documento o devuelve un fallo estructurado sin resultado parcial."""
-    parser = ProgramParser(source_path)
+    """Genera el documento y conserva el estado de publicación en el resultado."""
+    parser = ProgramParser(source_path, name_corrections=name_corrections)
     try:
         weeks = parser.parse()
     except GenerationValidationError as exc:
@@ -59,11 +62,18 @@ def generate_document(
             len(weeks),
             [f"El escritor falló inesperadamente: {exc}"],
         )
-    logger.info(
-        "Resultado: escritas=%d omitidas=%d errores=%d salida=%s",
-        result.written_weeks,
-        result.omitted_weeks,
-        len(result.errors),
-        result.output_path,
-    )
+    try:
+        logger.info(
+            "Resultado: escritas=%d omitidas=%d errores=%d",
+            result.written_weeks,
+            result.omitted_weeks,
+            len(result.errors),
+        )
+    except Exception as exc:
+        return GenerationResult(
+            written_weeks=result.written_weeks,
+            omitted_weeks=result.omitted_weeks,
+            errors=(*result.errors, f"No se pudo registrar el resultado: {exc}"),
+            output_path=result.output_path,
+        )
     return result

@@ -9,3 +9,17 @@ dist/
 .ruff_cache/
 /meeting_debug.json
 /meeting_generator.log
+/meeting_generator.log.*
+
+# Entornos virtuales
+.venv*/
+
+# Archivos de bloqueo de LibreOffice
+.~lock.*#
+
+# Editores
+.vscode/
+.idea/
+
+# Material con derechos de autor
+*.pdf

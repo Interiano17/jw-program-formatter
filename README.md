@@ -68,8 +68,10 @@ También puede ejecutarla como módulo desde la raíz del proyecto:
 python -m meeting_generator
 ```
 
-En Linux, el launcher incluido detecta automáticamente `.venv` junto al
-proyecto y, si no existe, intenta usar `python3`:
+En Linux, el launcher incluido busca un intérprete ejecutable junto al proyecto
+en este orden: `.venv-app/bin/python`, `.venv/bin/python` y
+`.venv/Scripts/python.exe`. Si ninguno está disponible, intenta usar `python3`
+del `PATH`:
 
 ```bash
 ./launch_meeting_generator.sh
@@ -82,9 +84,18 @@ Aparecerá una interfaz gráfica donde deberá:
 3. **Presionar "Generar y guardar como..."**.
 4. Elegir el nombre y la ubicación del archivo de salida.
 
+Cancelar la selección de la fuente o la plantilla conserva el archivo y su
+etiqueta anteriores. El botón Generar se habilita cuando ambos están
+seleccionados y utiliza esas mismas rutas.
+
 El diálogo propone `S-140_COMPLETADO.docx` junto a la plantilla, pero permite
 elegir otra ruta. Antes de reemplazar un archivo existente se solicita
 confirmación, y la fuente o la plantilla nunca pueden usarse como salida.
+
+Durante la generación, la ventana sigue respondiendo y los controles de
+selección y generación permanecen bloqueados. Se restauran al terminar,
+tanto en éxito como en error. Si cierra la ventana durante la generación,
+el cierre espera a que termine la escritura en curso.
 
 ---
 
@@ -121,14 +132,26 @@ program_automation/
 |---|---|
 | `__main__.py` | Permite ejecutar el paquete con `python -m meeting_generator` |
 | `main.py` | Interfaz gráfica (tkinter), selección de archivos y presentación del resultado |
-| `generator.py` | Coordina parser y writer con semántica de todo o nada |
-| `results.py` | Define `GenerationResult`: semanas escritas, omitidas, errores y ruta confirmada |
+| `generator.py` | Coordina parser y writer y conserva el estado de publicación |
+| `results.py` | Define `GenerationResult`: publicación, semanas escritas, omitidas, errores y ruta de salida |
 | `parser.py` | Lee el documento fuente, detecta semanas, extrae datos con regex |
 | `template_writer.py` | Carga la plantilla, localiza marcadores por contexto y reemplaza los textos preservando formato |
 | `models.py` | Define `Participant`, `Assignment`, `MeetingWeek` y su contrato de validación |
 | `validation.py` | Define el error agregado que presenta todos los problemas encontrados |
 | `utils.py` | Funciones auxiliares: limpieza de texto, separación de nombres, logging |
 | `config.py` | Patrones regex, constantes, marcadores de plantilla y tiempos por defecto |
+
+La configuración compartida efectiva vive en `meeting_generator/config.py`:
+salida sugerida, logging, nombre de congregación, patrones utilizados y reglas
+de horario. También contiene la única definición de `TEMPLATE_MARKERS`, una
+tupla que el escritor importa para limpiar y validar contenido pendiente.
+`PLACEHOLDERS` es el subconjunto utilizado para limpiar filas sobrantes; los
+rótulos fijos del formulario permanecen en el documento.
+
+La detección de secciones de la fuente se implementa en `parser.py`; los
+encabezados que reconoce la plantilla se definen en `template_writer.py`.
+La capacidad se descubre en la plantilla y los campos requeridos se validan
+en `models.py`, sin límites de configuración que esos módulos no utilicen.
 
 ---
 
@@ -141,8 +164,26 @@ tablas de tres columnas:
 2. **Extracción de cabecera**: Obtiene fecha, lectura semanal, presidente y canción inicial mediante regex.
 3. **Identificación de secciones**: Detecta los encabezados `TESOROS DE LA BIBLIA`, `SEAMOS MEJORES MAESTROS` y `NUESTRA VIDA CRISTIANA`.
 4. **Extracción de puntos**: Cada punto conserva su número, título, duración y participantes; también se separan filas que contienen varias asignaciones.
+   En filas combinadas debe haber un párrafo no vacío de título y un grupo de
+   participantes por cada número. Si las cantidades no coinciden, se informa
+   la semana y la fila y se rechaza el documento sin reemplazar la salida previa.
 5. **Separación de nombres**: El separador `//` divide automáticamente estudiante y ayudante (o conductor y lector).
+   Se acepta un nombre o dos nombres separados por un único `//`. Se rechazan
+   grupos vacíos, grupos que solo contienen un sufijo, más de dos participantes
+   y barras que no formen ese separador. El error indica semana y fila y evita
+   reemplazar la salida previa. Presidente y oraciones requieren una sola persona.
 6. **Inferencias específicas**: Completa duraciones y números omitidos únicamente cuando las reglas existentes permiten deducirlos sin ambigüedad.
+   Las asignaciones de Tesoros y Ministerio sin número se rechazan indicando
+   la semana y la fila, incluso cuando comparten celda con un encabezado.
+   Los encabezados, canciones y filas vacías siguen siendo válidos; los números
+   de Vida Cristiana conservan su regla de inferencia existente.
+   Las filas no vacías con columnas omitidas o desplazadas, y las fusiones que
+   impiden distinguir número, contenido y participantes, se rechazan con semana
+   y fila. También se rechazan las asignaciones incompletas y las mezclas de
+   oración o conclusión con otra actividad. Las filas combinadas deben conservar
+   un número y un grupo de participantes por actividad; una única asignación no
+   puede absorber varias duraciones o grupos. La conclusión puede compartir fila
+   con una canción cuando no contiene otra asignación.
 7. **Validación completa**: Rechaza el documento entero si falta un campo,
    canción, participante, duración o número requerido; nunca devuelve semanas
    parciales.
@@ -155,6 +196,52 @@ tablas de tres columnas:
 - Soporta variaciones en el formato de fechas (`SEMANA DEL X AL Y`, `SEMANA DEL X DE MES AL Y DE MES`)
 - Reconoce los 66 libros bíblicos, incluidos nombres numerados y compuestos;
   la posición de la lectura delimita la fecha de la semana.
+
+### Normalización y correcciones de nombres
+
+La normalización limpia espacios, convierte nombres completamente en mayúsculas
+a formato título y conserva los sufijos de participantes. Mantiene las letras,
+la puntuación y todos los componentes del nombre: no corrige apellidos ni
+selecciona personas por fecha o número de asignación.
+
+La interfaz usa los nombres del documento fuente. Para corregirlos, actualice
+la fuente o declare correcciones explícitas al usar la API. Cada `NameCorrection`
+requiere el nombre original completo, el reemplazo y un motivo no vacío:
+
+```python
+from pathlib import Path
+
+from meeting_generator.generator import generate_document
+from meeting_generator.models import NameCorrection
+
+result = generate_document(
+    Path("programa-mensual.docx"),
+    Path("S-140_S.docx"),
+    Path("S-140_COMPLETADO.docx"),
+    name_corrections=(
+        NameCorrection(
+            original_name="Ana Ejemploo",
+            corrected_name="Ana Ejemplo",
+            reason="Nombre confirmado por la persona responsable del programa",
+        ),
+    ),
+)
+```
+
+El ejemplo usa nombres ficticios; el motivo debe indicar la justificación real.
+Las correcciones comparan nombres completos tras normalizar espacios y mayúsculas,
+incluidos los sufijos cuando estén presentes. Solo se aplican al documento de esa
+ejecución, mantienen intacta la fuente y registran en el log el archivo, la semana,
+el campo, el nombre anterior, el nuevo y el motivo. Las reglas que repitan un mismo
+nombre original normalizado se rechazan antes de escribir la salida.
+Los nombres originales y corregidos deben identificar a una sola persona:
+no admiten separadores ni grupos vacíos. La misma validación se aplica a las
+semanas proporcionadas directamente a `fill_template`.
+
+Se retiraron los reemplazos automáticos de `Cerrano`, `Sussy` y `O”Connor`, así como
+la sustitución de participante por fecha y punto: los documentos contienen
+variantes, pero el historial no documenta una autorización para aplicarlas a toda
+fuente. Cualquier corrección necesaria debe declararse con su justificación.
 
 ---
 
@@ -171,17 +258,56 @@ El writer utiliza una estrategia de **reemplazo contextual**:
    los no utilizados; cualquier marcador pendiente impide guardar el archivo.
 6. **Publicación atómica**: Guarda primero en un archivo temporal del mismo
    directorio, comprueba que sea un DOCX legible y solo entonces reemplaza la
-   ruta de salida.
+   ruta de salida. Resuelve el directorio antes del reemplazo y verifica el
+   archivo publicado; el temporal solo se elimina cuando no llegó a publicarse.
 7. **Resultado estructurado**: Solo informa éxito cuando la ruta creada existe;
-   en cualquier fallo devuelve cero semanas escritas, todas las semanas
-   detectadas como omitidas y los errores encontrados.
-8. **Preservación de formato**: Opera a nivel de `runs` de python-docx, modificando solo el texto y conservando tipografía, tamaño, color, negrita, cursiva, etc.
+   un fallo anterior al reemplazo devuelve cero semanas escritas, todas las
+   semanas detectadas como omitidas y ninguna ruta de salida. Si el reemplazo
+   ya ocurrió, conserva las semanas publicadas, cero omitidas, la ruta y el
+   error posterior. `published` indica que la publicación ocurrió, aunque el
+   archivo deje de estar disponible; `succeeded` requiere que no haya errores
+   y que el archivo siga siendo accesible y no esté vacío.
+8. **Preservación de formato**: Al sustituir texto, opera a nivel de `runs` de python-docx y conserva tipografía, tamaño, color, negrita, cursiva, etc.
 
-### Lo que NO se modifica
+La interfaz distingue los fallos anteriores y posteriores a la publicación.
+En un fallo posterior indica la ruta, las semanas escritas y si esta ejecución
+creó el archivo o reemplazó uno anterior; el reemplazo no se revierte.
+
+Al descubrir filas y escribir asignaciones, procesa una sola vez el contenido de
+cada celda fusionada, en su fila de origen. Las continuaciones verticales no crean
+filas adicionales ni borran horas o participantes; la limpieza auxiliar respeta
+la identidad de la celda principal. Una celda de participantes compartida entre
+asignaciones admite los mismos nombres en todas ellas; si se requieren nombres
+distintos, se informa la semana y la fila y se conserva cualquier salida anterior.
+
+Se escribe y verifica la hora de inicio de cada actividad, incluso cuando su
+celda horaria está vacía, conservando el formato. Si una celda fusionada debe
+mostrar horas distintas o una hora no queda escrita correctamente, se rechaza
+la generación indicando semana, tabla y fila, sin reemplazar la salida anterior.
+La comprobación se repite después de eliminar formularios y filas sobrantes y
+al reabrir el DOCX temporal, antes de publicarlo. También se rechaza una fusión
+si la limpieza altera la hora de una actividad que permanece en el documento.
+Si una fila omite la columna horaria, se rechaza la plantilla en lugar de
+escribir y validar la hora en la siguiente columna.
+Las fusiones de horas con títulos o etiquetas se rechazan para conservar el
+contenido, y las horas antiguas de filas sin actividad se limpian.
+
+La **conclusión** dura tres minutos y requiere exactamente un participante.
+Siempre se escribe el nombre indicado en la fuente y se verifica en la fila de
+conclusión. Se utiliza su marcador de participante o, si falta, la celda final
+vacía del lado derecho, conservando el formato. Si falta el nombre, no hay una
+celda adecuada o la escritura falla, se rechaza la generación y se conserva
+cualquier salida anterior.
+
+### Formato que se conserva
+
+En el documento generado se eliminan los formularios no utilizados y las filas
+de asignación sobrantes. También se eliminan las tablas cuyos formularios quedan
+todos sin utilizar. En el contenido que permanece se conserva:
 
 - Tipografía (fuente, tamaño, color)
 - Márgenes
-- Tablas
+- Formato de las tablas y celdas conservadas
 - Alineación
 - Espaciado
 - Bordes
@@ -211,8 +337,9 @@ La detección de los tres encabezados de sección se encuentra en
 `ProgramParser._detect_section_from_lines()` dentro de `parser.py`. Cualquier
 cambio debe acompañarse con casos de prueba para las variantes aceptadas.
 
-Los patrones de cabecera, canción, duración y cierre que sí son compartidos se
-mantienen en `config.py`.
+Los patrones de cabecera, canción, nombres y cierre utilizados por los módulos
+se mantienen en `config.py`. La expresión que extrae duraciones de los títulos
+está en `ProgramParser._create_assignment()`.
 
 ### Agregar un nuevo tipo de punto
 
@@ -241,31 +368,99 @@ La suite genera fuentes y plantilla DOCX sintéticas, anonimizadas y temporales.
 No necesita documentos operativos ni archivos binarios versionados y elimina
 los fixtures al terminar.
 
-### Calidad estática
+### Medición de generación
 
-Instale las herramientas de desarrollo y ejecute Ruff y Mypy con:
+Para repetir la medición de rendimiento:
 
 ```bash
-python -m pip install -e ".[dev]"
-ruff check meeting_generator tests
-mypy meeting_generator
+python -m tests.benchmark_generation
 ```
 
-El workflow `.github/workflows/quality.yml` ejecuta las pruebas, Ruff y Mypy en
-cada `push` y `pull_request`.
+El benchmark usa la fuente sintética de nueve semanas y la plantilla de las
+pruebas, sin modificar documentos operativos. Mide la generación completa,
+incluidos análisis, validación y guardado; excluye la creación de fixtures y la
+interfaz gráfica. Ejecuta un calentamiento y cinco generaciones medidas, y
+devuelve sus tiempos, la mediana, las versiones y una huella de las partes del
+DOCX que permite comparar contenido y formato sin las fechas del contenedor ZIP.
+
+La comparación local del punto 8, con Python 3.12.3 y `python-docx` 1.2.0, dio:
+
+| Versión | Mediana para nueve semanas |
+| --- | ---: |
+| Antes de reutilizar filas y celdas | 1,69 s |
+| Después | 0,95 s |
+
+La reducción fue del 43,8 %, con las partes del DOCX idénticas. Los aproximadamente
+2,23 s del análisis anterior quedan como referencia histórica: no se reprodujo
+esa medición con los mismos documentos y condiciones. La mejora indicada arriba
+compara los mismos fixtures y entorno antes y después del cambio.
+
+### Calidad estática
+
+Cree un entorno de desarrollo separado con Python 3.12 para que la instalación,
+las pruebas y las herramientas usen el mismo intérprete:
+
+```bash
+python3.12 -m venv .venv-dev
+source .venv-dev/bin/activate
+python -m pip install -e ".[dev]"
+python -m pip check
+python -m unittest discover -v
+python -m ruff check meeting_generator tests
+python -m ruff format --check meeting_generator tests
+python -m mypy meeting_generator
+```
+
+Si la instalación de Python no incluye `ensurepip`, puede crear el entorno con
+`python3.12 -m virtualenv .venv-dev` cuando `virtualenv` esté disponible en el
+sistema. En Windows, use `py -3.12 -m venv .venv-dev` y active el entorno con
+`.venv-dev\Scripts\Activate.ps1`.
+
+Los métodos del parser y del escritor usan los tipos de `python-docx` para tablas,
+filas, celdas y párrafos. Mypy rechaza firmas incompletas; no se omiten errores de
+estos módulos. Mantiene Python 3.10 como objetivo de compatibilidad.
+
+El código de la aplicación y las pruebas usan Ruff Formatter. Para aplicar el
+formato antes de revisar el diff:
+
+```bash
+python -m ruff format meeting_generator tests
+```
+
+Use nombres descriptivos para índices, participantes y rangos de texto. Los
+comentarios deben explicar reglas o decisiones que el código no haga evidentes.
+
+El workflow `.github/workflows/quality.yml` ejecuta las pruebas, Ruff, la
+comprobación de formato y Mypy con Python 3.10 en cada `push` y `pull_request`,
+usando también `python -m`.
 
 ---
 
 ## 📊 Logging
 
-El programa genera automáticamente un archivo `meeting_generator.log` en el directorio actual que registra:
+El programa escribe en consola y en `meeting_generator.log`, en el directorio
+actual. El archivo rota al alcanzar 5 MiB y conserva tres copias:
+`meeting_generator.log.1`, `.2` y `.3`. Los límites se definen en `config.py`
+mediante `LOG_MAX_BYTES` y `LOG_BACKUP_COUNT`.
 
-- Archivo fuente leído
-- Cantidad de semanas encontradas
-- Cada semana procesada (fecha y estado)
-- Advertencias (datos faltantes)
-- Errores (semanas que no se pudieron procesar)
-- Archivo generado
+Si no se puede abrir el archivo de log o resolver el directorio actual, la
+aplicación continúa con logging en consola y muestra una advertencia en la
+interfaz. Si ya había handlers operativos, se conservan cuando falla la apertura
+del nuevo archivo.
+
+La configuración usa el logger `meeting_generator`. Al reconfigurar con éxito,
+`setup_logging` sustituye y cierra sus handlers propios anteriores; el logger
+global conserva su configuración y los mensajes del paquete no se propagan a él.
+
+Los registros habituales contienen el número de semana, las cantidades de
+asignaciones, inferencias, advertencias y resultados. No incluyen nombres de
+participantes, rutas de archivos ni fragmentos del contenido fuente.
+Los errores de validación conservan la semana, fila o punto afectado, y las
+excepciones inesperadas conservan su traza para diagnosticar el fallo.
+
+Las correcciones explícitas mantienen su registro de auditoría: archivo,
+semana, campo, nombre original, nombre corregido y motivo. Estos datos permiten
+comprobar las sustituciones solicitadas; no se registran durante la normalización.
 
 ---
 

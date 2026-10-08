@@ -1,8 +1,8 @@
 """
 Módulo de configuración centralizada para el Meeting Generator.
 
-Contiene todas las constantes, expresiones regulares compiladas,
-palabras clave y configuraciones utilizadas por el parser y el writer.
+Contiene los patrones y ajustes compartidos que usan el parser y el writer,
+incluido el catálogo efectivo de marcadores pendientes de la plantilla.
 """
 
 import logging
@@ -13,7 +13,6 @@ import re
 # Configuración de archivos y logging
 # ---------------------------------------------------------------------------
 
-# Nombre del archivo de salida generado
 OUTPUT_FILENAME: str = "S-140_COMPLETADO.docx"
 
 # Nombre mostrado en el encabezado de cada página del formulario. Configure el
@@ -23,21 +22,14 @@ CONGREGATION_NAME: str = os.environ.get(
     "Congregación Loarque",
 )
 
-# Nombre del archivo de log
 LOG_FILENAME: str = "meeting_generator.log"
 
-# Nivel de logging por defecto
 LOG_LEVEL: int = logging.INFO
+LOG_MAX_BYTES: int = 5 * 1024 * 1024
+LOG_BACKUP_COUNT: int = 3
 
-# Formato del log
 LOG_FORMAT: str = "%(asctime)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT: str = "%Y-%m-%d %H:%M:%S"
-
-# ---------------------------------------------------------------------------
-# Extensiones de archivo permitidas
-# ---------------------------------------------------------------------------
-
-ALLOWED_EXTENSIONS: tuple[str, ...] = (".docx",)
 
 # ---------------------------------------------------------------------------
 # Patrones Regex compilados
@@ -49,10 +41,7 @@ ALLOWED_EXTENSIONS: tuple[str, ...] = (".docx",)
 #   "SEMANA DEL13  AL 19 JULIO. JEREMÍAS, 16, 17"
 #   "SEMANA DEL 27 DE JULIO  AL  2  DE  AGOSTO."
 #   "SEMANA DEL 3 AL 9 AGOSTO.JEREMÍAS 22, 23"
-RE_WEEK_HEADER: re.Pattern = re.compile(
-    r"^\s*SEMANA\s+DEL\s*\d+.*$",
-    re.IGNORECASE
-)
+RE_WEEK_HEADER: re.Pattern = re.compile(r"^\s*SEMANA\s+DEL\s*\d+.*$", re.IGNORECASE)
 
 # Extracción del contenido de fecha de la cabecera de semana.
 # El parser limita este contenido por la posición de la lectura semanal.
@@ -160,175 +149,61 @@ RE_WEEKLY_READING: re.Pattern = re.compile(
 # Ejemplo: "PRESIDENTE: ANA EJEMPLO. CANCIÓN 123:"
 # También: "PRESIDENTE. CARLOS EJEMPLO. CANCIÓN 44"
 RE_PRESIDENT_SONG: re.Pattern = re.compile(
-    r"PRESIDENTE\s*[:\.,]\s*[\.,]?\s*(.+?)\s*[\.,]?\s*CANCI[OÓ]N\s*(\d+)",
-    re.IGNORECASE
-)
-
-# Detección de secciones principales del programa
-RE_SECTION_TREASURES: re.Pattern = re.compile(
-    r"^\s*TESOROS\s+DE\s+(LA|LAS)\s+BIBLIA[SE]?[S]?\s*$",
-    re.IGNORECASE
-)
-
-RE_SECTION_MINISTRY: re.Pattern = re.compile(
-    r"^\s*SEAMOS\s+MEJORES\s+MAESTROS[\.\s]*$",
-    re.IGNORECASE
-)
-
-RE_SECTION_CHRISTIAN_LIFE: re.Pattern = re.compile(
-    r"^\s*NUESTRA\s+VIDA\s+CRISTIANA[\.\s]*$",
-    re.IGNORECASE
-)
-
-# Detección de números de punto (1 al 10 como marcadores de sección)
-RE_POINT_NUMBER: re.Pattern = re.compile(
-    r"^\s*(\d{1,2})\s*$"
-)
-
-# Detección de título de punto con duración entre paréntesis
-# Ejemplo: "Jehová merece que le obedezcamos . (10 minutos)"
-RE_POINT_TITLE_WITH_DURATION: re.Pattern = re.compile(
-    r"^(.+?)\s*[\(\.]\s*(\d+)\s*(?:minutos?|mins?\.?)\s*\)?\s*$",
-    re.IGNORECASE
-)
-
-# Detección de duración en cualquier texto entre paréntesis
-RE_DURATION: re.Pattern = re.compile(
-    r"\(?\s*(\d+)\s*(?:minutos?|mins?\.?)\s*\)?",
-    re.IGNORECASE
+    r"PRESIDENTE\s*[:\.,]\s*[\.,]?\s*(.+?)\s*[\.,]?\s*CANCI[OÓ]N\s*(\d+)", re.IGNORECASE
 )
 
 # Detección de canción intermedia o final
 # Ejemplo: "CANCIÓN 49", "CANCIÓN  22"
-RE_SONG: re.Pattern = re.compile(
-    r"^\s*CANCI[OÓ]N\s*(\d+)\s*$",
-    re.IGNORECASE
-)
+RE_SONG: re.Pattern = re.compile(r"^\s*CANCI[OÓ]N\s*(\d+)\s*$", re.IGNORECASE)
 
 # Separador de nombres: estudiante // ayudante o conductor // lector
-RE_NAME_SEPARATOR: re.Pattern = re.compile(
-    r"\s*//\s*"
-)
+RE_NAME_SEPARATOR: re.Pattern = re.compile(r"\s*//\s*")
 
 # Detección de nombres con sufijo entre paréntesis como (p) o (h)
-RE_NAME_SUFFIX: re.Pattern = re.compile(
-    r"\s*\([^)]*\)\s*$"
-)
+RE_NAME_SUFFIX: re.Pattern = re.compile(r"\s*\([^)]*\)\s*$")
 
 # Palabras de conclusión
 RE_CONCLUSION_WORDS: re.Pattern = re.compile(
-    r"^\s*PALABRAS\s+DE\s+CONCLUSI[OÓ]N[\.\s]*.*$",
-    re.IGNORECASE
+    r"^\s*PALABRAS\s+DE\s+CONCLUSI[OÓ]N[\.\s]*.*$", re.IGNORECASE
 )
 
 # Oración final
-RE_FINAL_PRAYER: re.Pattern = re.compile(
-    r"^\s*ORACI[OÓ]N\s+FINAL\s*$",
-    re.IGNORECASE
-)
-
-# Palabras de introducción
-RE_INTRODUCTION: re.Pattern = re.compile(
-    r"^\s*ORACI[OÓ]N[,\.]?\s*PALABRAS\s+DE\s+INTRODUCCI[OÓ]N\s*$",
-    re.IGNORECASE
-)
+RE_FINAL_PRAYER: re.Pattern = re.compile(r"^\s*ORACI[OÓ]N\s+FINAL\s*$", re.IGNORECASE)
 
 # Detección de "Estudio bíblico de la congregación"
 RE_BIBLE_STUDY: re.Pattern = re.compile(
-    r"^\s*Estudio\s+b[ií]blico\s+de\s+la\s*congregaci[oó]n[\.\s]*.*$",
-    re.IGNORECASE
-)
-
-# Detección de "haga discípulos"
-RE_MAKE_DISCIPLES: re.Pattern = re.compile(
-    r"^\s*Haga\s+disc[ií]pulos[\.\s]*.*$",
-    re.IGNORECASE
-)
-
-# Detección de "explique sus creencias"
-RE_EXPLAIN_BELIEFS: re.Pattern = re.compile(
-    r"^\s*Explique\s+sus\s+creencias[\.\s]*.*$",
-    re.IGNORECASE
-)
-
-# Detección de "discurso"
-RE_DISCOURSE: re.Pattern = re.compile(
-    r"^\s*DISCURSO[\.\s]*.*$",
-    re.IGNORECASE
-)
-
-# Detección de "empiece conversaciones"
-RE_START_CONVERSATIONS: re.Pattern = re.compile(
-    r"^\s*Empiece\s+conversaciones[\.\s]*.*$",
-    re.IGNORECASE
-)
-
-# Detección de "haga revisitas"
-RE_RETURN_VISITS: re.Pattern = re.compile(
-    r"^\s*Haga\s+revisitas[\.\s]*.*$",
-    re.IGNORECASE
+    r"^\s*Estudio\s+b[ií]blico\s+de\s+la\s*congregaci[oó]n[\.\s]*.*$", re.IGNORECASE
 )
 
 # ---------------------------------------------------------------------------
 # Marcadores en la plantilla S-140 que deben ser reemplazados
 # ---------------------------------------------------------------------------
 
-# Marcadores para búsqueda en la plantilla destino
-TEMPLATE_MARKERS: dict[str, str] = {
-    "fecha": "[FECHA]",
-    "lectura_semanal": "LECTURA SEMANAL DE LA BIBLIA",
-    "presidente": "Presidente:",
-    "nombre_generico": "[Nombre]",
-    "cancion": "Canción [Número]",
-    "oracion": "Oración:",
-    "titulo": "[Título]",
-    "estudiante": "Estudiante:",
-    "estudiante_ayudante": "Estudiante/Ayudante:",
-    "conductor_lector": "Conductor/Lector:",
-    "nombre_nombre": "[Nombre/Nombre]",
-    "palabras_conclusion": "Palabras de conclusión",
-    "nombre_congregacion": "[NOMBRE DE LA CONGREGACIÓN]",
-}
+# Marcadores variables que se limpian en las filas sobrantes.
+PLACEHOLDERS: tuple[str, ...] = (
+    "[FECHA]",
+    "[Nombre]",
+    "[Título]",
+    "[Nombre/Nombre]",
+    "Canción [Número]",
+    "[Número]",
+    "[X mins.]",
+    "[XX mins.]",
+    "(X mins.)",
+    "(XX mins.)",
+    "[NOMBRE DE LA CONGREGACIÓN]",
+)
 
-# Orden de las secciones en la plantilla (para reemplazo secuencial)
-TEMPLATE_SECTION_ORDER: list[str] = [
-    "fecha",
-    "presidente",
-    "oracion",
-    "cancion_inicio",
-    "punto1_titulo",
-    "punto1_nombre",
-    "punto2_nombre",
-    "punto3_estudiante",
-    "punto4_titulo",
-    "punto4_estudiante_ayudante",
-    "punto5_titulo",
-    "punto5_estudiante_ayudante",
-    "punto6_titulo",
-    "punto6_estudiante_ayudante",
-    "punto7_titulo",
-    "punto7_estudiante_ayudante",
-    "cancion_intermedia",
-    "punto8_titulo",
-    "punto8_nombre",
-    "punto9_titulo",
-    "punto9_nombre",
-    "punto10_conductor_lector",
-    "cancion_final",
-    "oracion_final",
-    "conclusion_nombre",
-]
+# Catálogo completo para detectar contenido pendiente antes de guardar.
+# Los rótulos fijos, como "Presidente:" u "Oración:", deben permanecer.
+TEMPLATE_MARKERS: tuple[str, ...] = (*PLACEHOLDERS, "LECTURA SEMANAL DE LA BIBLIA")
 
 # ---------------------------------------------------------------------------
 # Constantes de tiempo por defecto para puntos
 # ---------------------------------------------------------------------------
 
-# Tiempos por defecto para cada tipo de punto (en minutos)
+# Duraciones usadas para el horario y la inferencia de discursos (en minutos).
 DEFAULT_DURATIONS: dict[str, int] = {
-    "tesoros_punto1": 10,
-    "tesoros_punto2": 10,
-    "tesoros_punto3": 4,
-    "estudio_biblico": 30,
     "introduccion": 1,
     "conclusion": 3,
     "ministerio_discurso": 5,
@@ -345,22 +220,8 @@ SONG_DURATION_MINUTES: int = 4
 OPENING_PRAYER_DURATION_MINUTES: int = 1
 MINISTRY_TRANSITION_MINUTES: int = 1
 
-# ponytail: ajuste local del programa de septiembre; convertirlo en metadato
-# de la fuente si aparecen más excepciones de horario.
+# ponytail: duración excepcional ligada a fecha y lectura; usar metadatos
+# de la fuente si se añaden más excepciones de horario.
 INTERMEDIATE_SONG_DURATION_OVERRIDES: dict[tuple[str, str], int] = {
     ("7 al 13 de septiembre", "Jeremías 32-33"): 6,
 }
-
-PARTICIPANT_NAME_OVERRIDES: dict[tuple[str, str, int], str] = {
-    ("19 al 25 de octubre", "Jeremías 45,46", 7): "Jorge Valladares (p)",
-}
-
-# ---------------------------------------------------------------------------
-# Límites y validaciones
-# ---------------------------------------------------------------------------
-
-# Máximo número de semanas que puede tener la plantilla
-MAX_TEMPLATE_WEEKS: int = 10
-
-# Mínimo de campos requeridos para considerar una semana válida
-MIN_REQUIRED_FIELDS: int = 5

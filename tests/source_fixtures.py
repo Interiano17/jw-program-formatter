@@ -263,9 +263,7 @@ def _standard_week(
                 else f"Práctica sintética {index + 1}"
             ),
             duration_minutes=duration,
-            participants=(
-                _ONE_PARTICIPANT if duration is None else _TWO_PARTICIPANTS
-            ),
+            participants=(_ONE_PARTICIPANT if duration is None else _TWO_PARTICIPANTS),
         )
         for index, duration in enumerate(ministry_durations)
     )
@@ -320,9 +318,7 @@ def _build_source(
 
 def _add_week_header(document: DocxDocument, week: WeekFixture) -> None:
     document.add_paragraph(f"SEMANA DEL {week.date}. {week.reading}")
-    document.add_paragraph(
-        f"PRESIDENTE: {week.president}. CANCIÓN {week.opening_song}"
-    )
+    document.add_paragraph(f"PRESIDENTE: {week.president}. CANCIÓN {week.opening_song}")
 
 
 def _add_week_table(document: DocxDocument, week: WeekFixture) -> None:
