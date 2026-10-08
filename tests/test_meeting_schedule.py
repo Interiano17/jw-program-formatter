@@ -16,7 +16,6 @@ from docx.oxml.ns import qn
 
 from meeting_generator.config import BIBLE_BOOK_NAMES
 from meeting_generator.generator import generate_document
-from meeting_generator.settings import AppSettings
 from meeting_generator.main import (
     COLOR_ERROR,
     COLOR_MUTED,
@@ -26,6 +25,7 @@ from meeting_generator.main import (
 from meeting_generator.models import Assignment, NameCorrection
 from meeting_generator.parser import ProgramParser, parse_document
 from meeting_generator.results import GenerationResult
+from meeting_generator.settings import AppSettings
 from meeting_generator.template_writer import TemplateWriter, fill_template
 from meeting_generator.utils import (
     normalize_person_name,
@@ -2265,7 +2265,8 @@ class GuiGenerationResultTests(unittest.TestCase):
             self.app._select_template_file()
 
         self.assertEqual(
-            source_label, {"text": f"✓ {SECOND_SOURCE_DOCUMENT.name}", "fg": COLOR_SUCCESS}
+            source_label,
+            {"text": f"✓ {SECOND_SOURCE_DOCUMENT.name}", "fg": COLOR_SUCCESS},
         )
         self.assertEqual(
             template_label, {"text": f"✓ {TEMPLATE_DOCUMENT.name}", "fg": COLOR_SUCCESS}
@@ -2441,7 +2442,9 @@ class GuiGenerationResultTests(unittest.TestCase):
             "No se pudo registrar el error en el log: log no disponible",
             failure_message,
         )
-        self.assertEqual(self.app.status_label.config.call_args.kwargs["fg"], COLOR_ERROR)
+        self.assertEqual(
+            self.app.status_label.config.call_args.kwargs["fg"], COLOR_ERROR
+        )
 
     def test_gui_reports_published_output_that_can_no_longer_be_verified(self) -> None:
         for existing_output in (False, True):
@@ -2793,7 +2796,9 @@ class GuiGenerationResultTests(unittest.TestCase):
         show_info.assert_not_called()
         show_error.assert_called_once()
         self.assertIn("fallo inesperado", show_error.call_args.args[1])
-        self.assertEqual(self.app.status_label.config.call_args.kwargs["fg"], COLOR_ERROR)
+        self.assertEqual(
+            self.app.status_label.config.call_args.kwargs["fg"], COLOR_ERROR
+        )
         self.assertFalse(self.app._generation_in_progress)
         for control in (
             self.app.source_button,

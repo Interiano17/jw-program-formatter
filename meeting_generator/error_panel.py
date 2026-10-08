@@ -116,7 +116,9 @@ class ErrorPanel(tk.Frame):
         """Muestra el panel con los errores agrupados."""
         groups = group_errors(errors)
         total = sum(len(items) for _, items in groups)
-        self._title.config(text=f"DETALLES · {total} PROBLEMA{'S' if total != 1 else ''}")
+        self._title.config(
+            text=f"DETALLES · {total} PROBLEMA{'S' if total != 1 else ''}"
+        )
 
         lines: list[str] = []
         self._text.config(state=tk.NORMAL)

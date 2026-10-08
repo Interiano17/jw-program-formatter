@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
+from typing import Any
 
 from .error_panel import ErrorPanel
 from .generator import generate_document
@@ -96,7 +97,9 @@ class MeetingGeneratorApp:
                 self._dnd_enabled = True
                 return TkinterDnD.Tk(className="generador-s140")
             except (RuntimeError, tk.TclError):
-                logger.warning("tkdnd no está disponible; se desactiva arrastrar y soltar.")
+                logger.warning(
+                    "tkdnd no está disponible; se desactiva arrastrar y soltar."
+                )
         self._dnd_enabled = False
         return tk.Tk(className="generador-s140")
 
@@ -243,15 +246,15 @@ class MeetingGeneratorApp:
         def highlight(color: str) -> None:
             card.config(highlightbackground=color, highlightcolor=color)
 
-        def handle_enter(event: tk.Event) -> str:
+        def handle_enter(event: Any) -> str:
             highlight(COLOR_PRIMARY)
             return str(event.action)
 
-        def handle_leave(event: tk.Event) -> str:
+        def handle_leave(event: Any) -> str:
             highlight(COLOR_BORDER)
             return str(event.action)
 
-        def handle_drop(event: tk.Event) -> str:
+        def handle_drop(event: Any) -> str:
             highlight(COLOR_BORDER)
             self._handle_drop(str(event.data), on_drop)
             return str(event.action)
@@ -422,9 +425,7 @@ class MeetingGeneratorApp:
     def _set_source(self, path: Path) -> None:
         """Registra el documento fuente elegido y recuerda su carpeta."""
         self.source_path = path
-        self.source_label.config(
-            text=f"✓ {_display_name(path.name)}", fg=COLOR_SUCCESS
-        )
+        self.source_label.config(text=f"✓ {_display_name(path.name)}", fg=COLOR_SUCCESS)
         self.settings.set_path("source_dir", path.parent)
         logger.info("Documento fuente seleccionado.")
         self._update_generate_button()
